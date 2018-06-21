@@ -1,0 +1,895 @@
+---
+title: "Presentation för Socialstyrelsen 180509"
+author: "Martin Magnéli"
+date: '2018-05-07'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+I VARA-studien har vi validerat SKLs Vården i siffror och Svenska Höftprotesregistrets instrument för att mäta vårdskador efter höftprotesoperation.
+
+Vi genomförde retrospektiv journalgranskning på 1998 patienter med höftprotes. Vi granskade alla sjukhusvårdtillfällen 90 dagar efter operationen och registrerade alla skador och vårdskador vi hittade med Markörbaserad journalgranskning.
+
+####-Vi hittade 2116 skador hos 1171 patienter. 
+####-1604 skador hos 975 patienter bedömdes som vårdskador (undvikbara).
+####-Endast 54% av skadorna hade en korrekt ICD-10 kod.
+
+```{r, include=FALSE}
+source("load_base_files.R")
+keys2 <- read.csv("selectedpatients.csv") %>%
+        select(serial_no, pnr) 
+sp_prim <- sp_total %>%
+        mutate(days = op_date - adm_date, days2 = disc_date - op_date) %>% 
+        filter(days >= 0, days2 > 0) #Selecting primary admissions
+dead_index <- left_join(sp_prim, mort, by = "serial_no")
+dead_index <- dead_index %>%
+        mutate(index_dead = if_else(death_date == disc_date, 1, 0)) %>%
+        mutate(dead_30 = if_else(death_date - op_date <= 30 & index_dead == 0, 1, 0)) %>%
+        mutate(dead_90 = if_else(death_date - op_date <= 90 & index_dead == 0, 1, 0)) %>%
+        select(serial_no, index_dead, dead_30, dead_90) %>%
+        distinct(serial_no, .keep_all = T)
+
+ae_data <- sp_total %>% #selecting admissions with pos codes
+        mutate(ae = if_else(grepl(paste(codes_main, collapse= "|"), icd_main) 
+                            | grepl(paste(codes_all, collapse= "|"), icd_main)
+                            | grepl(paste(codes_all, collapse= "|"), icd_code),1,0)) %>%
+        #mutate(days = adm_date - op_date) %>%
+        filter(adm_date - op_date < 90 & disc_date >= op_date) %>%
+        mutate(index_ae = if_else(ae == 1 & op_date >= adm_date & disc_date > op_date, 1, 0)) %>%
+        mutate(re_30_ae = if_else(ae == 1 & index_ae == 0 & adm_date - op_date <= 30 & adm_date > op_date, 1, 0)) %>%
+        mutate(re_90_ae = if_else(ae == 1 & index_ae == 0 & adm_date - op_date <= 90 & adm_date > op_date, 1, 0)) %>%
+        filter(ae == 1) 
+index <- filter(ae_data, index_ae == 1) %>%
+        distinct(serial_no, .keep_all = T) %>%
+        mutate(index_ae = 1) %>%
+        select(serial_no, index_ae)
+
+re_30 <- filter(ae_data, re_30_ae == 1) %>%
+        distinct(serial_no, .keep_all = T) %>%
+        mutate(ae_30 = 1) %>%
+        select(serial_no, ae_30)
+
+re_90 <- filter(ae_data, re_90_ae == 1) %>%
+        distinct(serial_no, .keep_all = T) %>%
+        mutate(ae_90 = 1) %>%
+        select(serial_no, ae_90)
+ae_data <- left_join(ac, index, by = "serial_no") %>%
+        left_join(re_30, by = "serial_no") %>%
+        left_join(re_90, by = "serial_no") %>%
+        left_join(dead_index, by = "serial_no")
+ae_data$index_ae[is.na(ae_data$index_ae)] <- 0
+ae_data$ae_30[is.na(ae_data$ae_30)] <- 0
+ae_data$ae_90[is.na(ae_data$ae_90)] <- 0
+ae_data$index_dead[is.na(ae_data$index_dead)] <- 0
+ae_data$dead_30[is.na(ae_data$dead_30)] <- 0
+ae_data$dead_90[is.na(ae_data$dead_90)] <- 0
+
+ae_data <- ae_data %>%       
+        mutate(pos_30 = if_else(ae_30 == 1 | dead_30 == 1, 1, 0)) %>%
+        mutate(pos_90 = if_else(ae_90 == 1 | dead_90 == 1, 1, 0)) %>%
+        select(serial_no, pos_30, pos_90, los_group, readm_group)
+
+x <- ae_data
+rm(fn, codes_all, codes_main, sp_total, dead, mort, sp_prim, dead_index, index, re_30, re_90)
+#VARA AEs from RRR
+fn <- file.path(base_location, "ae_data.csv")
+rrr_data <- read.csv(file=fn, encoding=encoding_type)
+
+rrr_data$event_date <- as.Date(rrr_data$event_date)
+
+aes <- rrr_data %>%
+        filter( causality > 2 ) %>%
+        left_join(ac, by = "serial_no") 
+
+aes <- aes %>%
+        mutate(days = event_date - op_date) %>%
+        mutate(rrr_i = if_else(op_date >= adm_date & disc_date > op_date & adm_date <= event_date & event_date <= disc_date , 1, 0)) %>%
+        mutate(rrr_30 = if_else(rrr_i == 0 & event_date - op_date <= 30 , 1, 0)) %>%
+        mutate(rrr_90 = if_else(rrr_i == 0 & event_date - op_date <= 90 , 1, 0)) 
+aes_prev <- filter(aes, avoidability > 2)
+aes_serious <- filter(aes, NCCMERP > 5)
+aes_all <- aes
+aes_s <- aes_serious
+aes_p <- aes_prev
+
+transformDF <- function(df) {
+        df1 <- df %>%
+                filter(rrr_i == 1) %>%
+                distinct(serial_no, .keep_all = T) %>%
+                select(serial_no, rrr_i)
+        
+        df2 <- df %>%
+                filter(rrr_30 == 1) %>%
+                distinct(serial_no, .keep_all = T) %>%
+                select(serial_no, rrr_30)
+        
+        df3 <- df %>%
+                filter(rrr_90 == 1) %>%
+                distinct(serial_no, .keep_all = T) %>%
+                select(serial_no, rrr_90)
+        
+        df <- left_join(ac, df1, by = "serial_no") %>%
+                left_join(df2, by = "serial_no") %>%
+                left_join(df3, by = "serial_no") %>%
+                mutate(rrr_both_30 = if_else(rrr_i == 1 | rrr_30 == 1, 1, 0)) %>%
+                mutate(rrr_both_90 = if_else(rrr_i == 1 | rrr_90 == 1, 1, 0)) %>%
+                select(serial_no, rrr_i, rrr_30, rrr_90, rrr_both_30, rrr_both_90)
+}
+
+aes <- transformDF(aes)
+aes_prev <- transformDF(aes_prev)
+aes_ser <- transformDF(aes_serious)
+
+aes[is.na(aes)] <- 0
+aes_prev[is.na(aes_prev)] <- 0
+aes_ser[is.na(aes_ser)] <- 0
+
+AE_frame <- left_join(ae_data, aes, by = "serial_no")
+AE_frame_prev <- left_join(ae_data, aes_prev, by = "serial_no")
+AE_frame_ser <- left_join(ae_data, aes_ser, by = "serial_no")
+
+
+catFun <- function(df) {
+        df <- mutate(df, cat_30= (if_else(rrr_both_30 == 1 & pos_30 == 1, "TP"
+                                     , if_else(rrr_both_30 == 0 & pos_30 == 0, "TN"
+                                     , if_else(rrr_both_30 == 1 & pos_30 == 0, "FN","FP")))))
+
+        df<- mutate(df, cat_90 = (if_else(rrr_both_90 == 1 & pos_90 == 1, "TP"
+                                    , if_else(rrr_both_90 == 0 & pos_90 == 0, "TN"
+                                    , if_else(rrr_both_90 == 1 & pos_90 == 0, "FN","FP")))))
+
+        df <- select(df, serial_no, pos_30, pos_90, rrr_i, rrr_30
+                   , rrr_90, rrr_both_30, rrr_both_90, cat_30, cat_90) 
+}
+AE_frame <- catFun(AE_frame)   
+AE_frame <- left_join(keys2, AE_frame, by = "serial_no")
+AE_frame_prev <- catFun(AE_frame_prev)
+AE_frame_prev <- left_join(keys2, AE_frame_prev, by = "serial_no")
+AE_frame_ser <- catFun(AE_frame_ser)
+AE_frame_ser <- left_join(keys2, AE_frame_ser, by = "serial_no")
+
+```
+
+###Sensitivitet (90 dagar) för instrumenten baserat på ICD-koder
+```{r}
+y <- table(AE_frame$cat_30)
+y['TP']/(y['TP']+y['FN'])
+y['TN']/(y['TN']+y['FP'])
+x <- table(AE_frame$cat_90)
+x['TP']/(x['TP']+x['FN'])
+x['TN']/(x['TN']+x['FP'])
+
+```
+Preventable
+```{r}
+y <- table(AE_frame_prev$cat_30)
+y['TP']/(y['TP']+y['FN'])
+y['TN']/(y['TN']+y['FP'])
+x <- table(AE_frame_prev$cat_90)
+x['TP']/(x['TP']+x['FN'])
+x['TN']/(x['TN']+x['FP'])
+```
+Serious
+```{r}
+y <- table(AE_frame_ser$cat_30)
+y['TP']/(y['TP']+y['FN'])
+y['TN']/(y['TN']+y['FP'])
+x <- table(AE_frame_ser$cat_90)
+x['TP']/(x['TP']+x['FN'])
+x['TN']/(x['TN']+x['FP'])
+```
+
+```{r, include=FALSE}
+#Preparing merge 
+library(boot) 
+library(randomForest)
+library(ranger)
+library(neuralnet)
+library(nnet)
+library(magrittr)
+#rm(list = ls())
+
+data_3 <- read.csv("/Users/martinmagneli/Desktop/Testanalys VARA/tab_3.csv", encoding="latin1", dec = ",", na.strings = ".")
+data_3$VTID_Median <- NULL
+
+base_location <- file.path("/Volumes/NO NAME/VARA_DATA_orginal/")
+encoding_type = "latin1"
+
+fn <- file.path(base_location, "aestudiepopvkedj.txt")
+ac <- read.delim(file=fn, 
+                 header=TRUE, 
+                 encoding=encoding_type, 
+                 stringsAsFactors=FALSE)
+ac <- ac %>% select(pnr = Personnummer
+                    , op_date = SHPR.Primäroperationsdatum
+                    , adm_date = Inskrivningsdatum
+                    , disc_date = Utskrivningsdatum
+                    , prim_clin = SHPR.Klinik
+                    , los = Vårdtid
+                    , fx = Fraktur
+                    , readm_group = Återinläggningsgrupp
+                    , los_group = Vårdtidsindelningsgrupp) 
+
+keys2 <- read.csv("selectedpatients.csv") %>%
+        select(serial_no, pnr) 
+
+ac <- left_join(keys2, ac, by = "pnr")
+ac$op_date <- as.Date(ac$op_date)
+ac$adm_date <- as.Date(ac$adm_date)
+
+fn <- file.path(base_location, "aeindexvtfstudiepop.txt")
+index <- read.delim(file=fn, 
+                    header=TRUE, 
+                    encoding=encoding_type, 
+                    stringsAsFactors=FALSE) %>%
+        select(pnr = Personnummer, sex = Kön, age = Ålder.vid.utskrivning
+               , hospital = Sjukhus..klartext, residence = Hemförsamling, city = Hemkommun)
+
+
+index <- left_join(keys2, index, by = "pnr") %>%
+        distinct(serial_no, .keep_all = T) %>%
+        left_join(ac, by = "serial_no") 
+
+index <- index %>% mutate(fx = factor(fx, levels=c("Ja", "Nej")
+                                      , labels=c("Yes", "No"))
+                          , sex = factor(sex, labels=c("Male", "Female"))) %>%
+        select(serial_no, pnr = pnr.x, sex, age, los, fx, prim_clin, op_date, los_group, readm_group, residence, city)
+
+fn <- file.path(base_location, "aestudiepop_patientreg.txt")
+sp <- read.delim(file=fn, 
+                 header=TRUE, 
+                 encoding=encoding_type, 
+                 stringsAsFactors=FALSE)
+
+fn <- file.path(base_location, "aestudiepop_patientreg_2012.txt")
+sp_12 <- read.delim(file=fn, 
+                    header=TRUE, 
+                    encoding=encoding_type, 
+                    stringsAsFactors=FALSE)
+sp <- sp %>% 
+        dplyr::select(pnr = Personnummer
+                      , adm_date = Inskrivningsdatum..num
+                      , disc_date = Utskrivningsdatum..num
+                      , adm_days = Vårdtid
+                      , icd_code = Diagnoser
+                      , icd_main = Huvuddiagnoskod
+                      , operation = Operationer
+                      , re_hospital = Sjukhus..klartext
+                      , ward = Medicinskt.verksamhetsområde..klartext)
+
+sp_12 <- sp_12 %>% 
+        dplyr::select(pnr = PNR 
+                      , adm_date = INDATUM
+                      , disc_date = UTDATUM
+                      , adm_days = VTID
+                      , icd_code = DIAGNOS
+                      , icd_main = HDIA
+                      , operation = OP
+                      , re_hospital = Sjukhusnamn
+                      , ward = MVOtext)
+sp_total <- sp %>%
+        bind_rows(sp_12) %>%
+        left_join(index, sp_total, by = "pnr") %>%
+        select(serial_no
+               , pnr
+               , adm_date
+               , op_date
+               , disc_date
+               , re_hospital)
+
+#readmission
+sp_total$adm_date <- as.Date(sp_total$adm_date)
+sp_total$disc_date <- as.Date(sp_total$disc_date)
+
+
+sp_prim <- sp_total %>%
+        mutate(days = op_date - adm_date, days2 = disc_date - op_date) %>% 
+        filter(days >= 0, days2 > 0) #Selecting primary admissions
+
+readm <- anti_join(sp_total, sp_prim) %>% 
+        mutate(days = adm_date - op_date) %>%     #selecting readmissions within 90 days
+        filter(days <= 90 & days > 0)
+
+readm <- group_by(readm, serial_no) %>%
+        mutate(readmissions = n()) %>%
+        distinct(serial_no, .keep_all = TRUE) %>%
+        select(serial_no
+               , readmissions)
+# creating master dataset
+master <- left_join(index, readm, by = "serial_no") %>%
+        select(serial_no
+               , pnr
+               , sex
+               , age
+               , fx
+               , hospital = prim_clin
+               , los
+               , readmissions
+               , op_date, los_group, readm_group)
+
+master$readmissions[is.na(master$readmissions)] <- 0
+
+#adding aes
+fn <- file.path(base_location, "ae_data.csv")
+ae_data <- read.csv(file=fn, encoding=encoding_type)
+ae_data$event_date <- as.Date(ae_data$event_date)
+found_AEs <- ae_data %>%
+        filter(causality > 2 )   #all AEs
+
+aes_all <- found_AEs %>%
+        group_by(serial_no) %>%
+        mutate(AEs = n()) %>%
+        distinct(serial_no, .keep_all = TRUE) 
+
+aes_prev <- filter(found_AEs, avoidability > 2) %>%
+        group_by(serial_no) %>%
+        mutate(AEs = n()) %>%
+        distinct(serial_no, .keep_all = TRUE) 
+
+aes_ser <- filter(found_AEs, NCCMERP > 5) %>%
+        group_by(serial_no) %>%
+        mutate(AEs = n()) %>%
+        distinct(serial_no, .keep_all = TRUE)
+
+joinfun <- function(df){left_join(master, df, by = "serial_no") %>%
+        select(serial_no, sex, age, fx, op_date, event_date, hospital, los, readmissions, AEs, los_group, readm_group)}
+
+master_all <- joinfun(aes_all)
+master_prev <- joinfun(aes_prev)
+master_ser <- joinfun(aes_ser)
+master_all$AEs[is.na(master_all$AEs)] <- 0
+master_prev$AEs[is.na(master_prev$AEs)] <- 0
+master_ser$AEs[is.na(master_ser$AEs)] <- 0
+
+master_all$op_date <- as.Date(master_all$op_date)
+master_all$event_date <- as.Date(master_all$event_date)
+master_prev$op_date <- as.Date(master_prev$op_date)
+master_prev$event_date <- as.Date(master_prev$event_date)
+master_ser$op_date <- as.Date(master_ser$op_date)
+master_ser$event_date <- as.Date(master_ser$event_date)
+master_all <- master_all %>%
+        mutate(has_ae_30 = if_else(event_date - op_date <= 30 , 1, 0))
+master_all$has_ae_30[is.na(master_all$has_ae_30)] <- 0
+master_all$ae_30 <- factor(master_all$has_ae_30 > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+master_all$has_ae_30 <- NULL
+master_prev <- master_prev %>%
+        mutate(has_ae_30 = if_else(event_date - op_date <= 30 , 1, 0))
+master_prev$has_ae_30[is.na(master_prev$has_ae_30)] <- 0
+master_prev$ae_30 <- factor(master_prev$has_ae_30 > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+master_prev$has_ae_30 <- NULL
+master_ser <- master_ser %>%
+        mutate(has_ae_30 = if_else(event_date - op_date <= 30 , 1, 0))
+master_ser$has_ae_30[is.na(master_ser$has_ae_30)] <- 0
+master_ser$ae_30 <- factor(master_ser$has_ae_30 > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+master_ser$has_ae_30 <- NULL
+
+groupHosp <- function(df) {
+        df <- mutate(df, type = if_else(df$hospital == "Karolinska/Huddinge" 
+                                        |df$hospital == "Karolinska/Solna"
+                                        |df$hospital == "Linköping"
+                                        |df$hospital == "SU/Mölndal"
+                                        |df$hospital == "SUS/Lund"
+                                        |df$hospital == "SUS/Malmö"
+                                        |df$hospital == "Umeå"
+                                        |df$hospital == "Uppsala"
+                                        |df$hospital == "Örebro"
+                                        , "university"
+                                        , if_else(df$hospital == "Borås-Skene"
+                                        |df$hospital == "Danderyd"
+                                        |df$hospital == "Eksjö"
+                                        |df$hospital == "Eskilstuna"
+                                        |df$hospital == "Falun"
+                                        |df$hospital == "Gävle"
+                                        |df$hospital == "Halmstad"
+                                        |df$hospital == "Helsingborg"
+                                        |df$hospital == "Hässleholm-Kristianstad"
+                                        |df$hospital == "Jönköping"
+                                        |df$hospital == "Kalmar"
+                                        |df$hospital == "Karlskrona-Karlshamn"
+                                        |df$hospital == "Karlstad"
+                                        |df$hospital == "Lidköping-Skövde"
+                                        |df$hospital == "Norrköping"
+                                        |df$hospital == "Sunderbyn"
+                                        |df$hospital == "Sundsvall"
+                                        |df$hospital == "Södersjukhuset"
+                                        |df$hospital == "Uddevalla"
+                                        |df$hospital == "Varberg"
+                                        |df$hospital == "Västerås"
+                                        |df$hospital == "Växjö"
+                                        |df$hospital == "Östersund"
+                                        |df$hospital =="Capio S:t Göran" & df$fx == "Yes" #S:t Göran considered county if fracture patient
+                                        , "county",
+                                        if_else(df$hospital == "Aleris Specialistvård Bollnäs"
+                                        |df$hospital == "Aleris Specialistvård Motala"
+                                        |df$hospital == "Aleris Specialistvård Nacka"
+                                        |df$hospital == "Aleris Specialistvård Sabbatsberg"
+                                        |df$hospital == "Art Clinic Göteborg"
+                                        |df$hospital == "Art clinic Jönköping"
+                                        |df$hospital == "Capio Movement Halmstad"               
+                                        |df$hospital == "Capio Ortopediska Huset"
+                                        |df$hospital == "Capio S:t Göran" & df$fx == "No"
+                                        |df$hospital == "Carlanderska"
+                                        |df$hospital == "Hermelinen Spec.vård"
+                                        |df$hospital == "Ortho Center IFK-kliniken"
+                                        |df$hospital == "Ortho Center Stockholm"
+                                        |df$hospital == "Sophiahemmet"
+                                        , "private"
+                                        , "countypart"))))
+}
+master_all <- groupHosp(master_all)
+master_prev <- groupHosp(master_prev)
+master_ser <- groupHosp(master_ser)
+
+master_all$op_date <- lubridate::year(master_all$op_date)
+master_prev$op_date <- lubridate::year(master_prev$op_date)
+master_ser$op_date <- lubridate::year(master_ser$op_date)
+#adding codes as predictor
+x <- select(x, serial_no, index_ae, re_30_ae, re_90_ae)
+master_all <- left_join(master_all, x, by = "serial_no") %>%
+        distinct(serial_no, .keep_all = TRUE)
+master_all$index_ae[is.na(master_all$index_ae)] <- 0
+master_all$re_30_ae[is.na(master_all$re_30_ae)] <- 0
+master_all$re_90_ae[is.na(master_all$re_90_ae)] <- 0
+master_all <- mutate(master_all, both_30 = if_else(index_ae == 1 | re_30_ae == 1, "Yes", "No"))
+master_all <- mutate(master_all, both_90 = if_else(index_ae == 1 | re_90_ae == 1, "Yes", "No"))
+master_all$both_30 %<>% factor
+master_all$both_90 %<>% factor
+master_all$index_ae <- factor(master_all$index_ae > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+master_all$re_30_ae <- factor(master_all$re_30_ae > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+master_all$re_90_ae <- factor(master_all$re_90_ae > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+
+
+ag_data <- data_3 %>%
+        rename(type = sjktyp, op_date = AR, sex = KON, age = ALDER, fx = fraktur) %>%
+        mutate(type = factor(type, levels=c("Länsdelssjukhus", "Länssjukhus", "Privatsjukhus", "Universitetssjukhus")
+                , labels=c("countypart", "county", "private", "university"))
+               , sex = factor(sex, labels=c("Male", "Female", "Both"))
+               , fx = factor(fx, labels=c("Yes", "No"))) 
+
+joinfun <- function(df){left_join(df, ag_data, by = c("type", "op_date"
+                                                      , "age", "sex", "fx")) %>% 
+                mutate(type = factor(type, labels=c("countypart", "county", "private", "university"))
+                    , sex = factor(sex, labels=c("Male", "Female"))
+                    , fx = factor(fx, labels=c("Yes", "No"))) %>%
+                select( AEs, sex, age, fx, op_date, los, readmissions
+                     , type, VTID_P50, VTID_P75, VTID_P90, VTID_P95
+                     , VTID_Mean, VTID_StdDev, AEs)#, ae_30, index_ae, re_30_ae, re_90_ae, both_30, both_90)
+        } 
+                       
+train_data_all <- joinfun(master_all)
+train_data_prev <- joinfun(master_prev)
+train_data_ser <- joinfun(master_ser)
+
+train_data_all <- na.omit(train_data_all)
+train_data_prev <- na.omit(train_data_prev)
+train_data_ser <- na.omit(train_data_ser)
+train_data_all$ae_90 <- factor(train_data_all$AEs > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+train_data_all$AEs <- NULL
+train_data_prev$ae_90 <- factor(train_data_prev$AEs > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+train_data_prev$AEs <- NULL
+train_data_ser$ae_90 <- factor(train_data_ser$AEs > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+train_data_ser$AEs <- NULL
+
+train_data_all_30 <- select(train_data_all, -ae_90) %>%
+        rename(has_AE = ae_30)
+train_data_all_90 <- select(train_data_all, -ae_30) %>%
+        rename(has_AE = ae_90)
+train_data_prev_30 <- select(train_data_prev, -ae_90) %>%
+        rename(has_AE = ae_30)
+train_data_prev_90 <- select(train_data_prev, -ae_30) %>%
+        rename(has_AE = ae_90)
+train_data_ser_30 <- select(train_data_ser, -ae_90) %>%
+        rename(has_AE = ae_30)
+train_data_ser_90 <- select(train_data_ser, -ae_30) %>%
+        rename(has_AE = ae_90)
+
+```
+##Försök att bygga ett nytt instrument
+Målet är att skapa ett nytt instrument som är baserat på mer robust data än ICD-koder. Resultaten från journalgranskningen och data på:  
+- vårdskador  
+- kön  
+- ålder  
+-fraktur  
+-vårdtid  
+-antal återinläggningar  
+-sjukhustyp  
+
+kompletterades med aggregerade data från socialstyrelsen och för varje patient:  
+- vårdtid för 50, 75, 90, 95 percentilena  
+- medelvårdtid och standarddeviation för samma sjukhustyp med uppdelning på   
+- ålder  
+- kön  
+- fraktur   
+- år
+```{r}
+head(data_3)
+```
+En tredjedel av datasetet har sparats för validering. Resterande används som träningsset. Vi använde 10 folds cross-validation för samtliga metoder
+
+
+```{r}
+no_splits <- 10
+shuffled <- sample(nrow(no_na_data), replace = FALSE)
+batch_size <- floor(length(shuffled)/no_splits)
+calcSens <- function(x) {
+        y <- x['Yes', 'Yes']/sum(x[ ,'Yes'])
+}
+calcSpec <- function(x) {
+        y <- x['No', 'No']/sum(x[ ,'No'])
+}
+```
+###Vi började med Random forest plots
+```{r}
+rffun <-function(df){
+        no_splits <- 10
+shuffled <- sample(nrow(df), replace = FALSE)
+batch_size <- floor(length(shuffled)/no_splits)
+calcSens <- function(x) {
+        y <- x['Yes', 'Yes']/sum(x[ ,'Yes'])
+}
+calcSpec <- function(x) {
+        y <- x['No', 'No']/sum(x[ ,'No'])
+}
+for (i in 0:(no_splits-1)) {
+        if (i == 0) results_rf <- list()
+
+        if (i == no_splits - 1) {
+                test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
+        } else {
+                test_rows <- shuffled[1:batch_size + i*batch_size]
+        }
+        train_rows <- shuffled[!(shuffled %in% test_rows)]
+        train <- df[train_rows, ]
+        test <- df[test_rows, ]
+        cross_model <- randomForest(has_AE ~., data = train)
+        p <- predict(cross_model, newdata = test)
+        results_rf <- append(results_rf, list(table(predicted = p, true=test$has_AE)))
+}
+
+print(paste("Sensitivity", sapply(results_rf, calcSens) %>%
+        mean()))
+
+paste("Specificity", sapply(results_rf, calcSpec) %>%
+        mean())
+}
+rffun(test_both)
+rffun(test_re)
+rffun(train_data_all_30)
+rffun(train_data_all_90)
+rffun(train_data_prev_30)
+rffun(train_data_prev_90)
+rffun(train_data_ser_30)
+rffun(train_data_ser_90)
+```
+sens_rf <- sapply(results_rf, calcSens) %>%
+        mean()
+
+spec_rf <- sapply(results_rf, calcSpec) %>%
+        mean()
+####Vi korrigerade viktningen i modellen för att öka specificiteten
+```{r}
+rffun2 <- function(df, w){
+                no_splits <- 10
+shuffled <- sample(nrow(df), replace = FALSE)
+batch_size <- floor(length(shuffled)/no_splits)
+calcSens <- function(x) {
+        y <- x['Yes', 'Yes']/sum(x[ ,'Yes'])
+}
+calcSpec <- function(x) {
+        y <- x['No', 'No']/sum(x[ ,'No'])
+}
+        for (i in 0:(no_splits-1)) {
+        if (i == 0) results_rf2 <- list()
+        
+        if (i == no_splits - 1) {
+                test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
+        } else {
+                test_rows <- shuffled[1:batch_size + i*batch_size]
+        }
+        train_rows <- shuffled[!(shuffled %in% test_rows)]
+        train <- df[train_rows, ]
+        test <- df[test_rows, ]
+        cross_model <- ranger(has_AE~., data = train, case.weights = (1 +(train$has_AE == "No")*w))
+        p <- predict(cross_model, data = test)
+        results_rf2 <- append(results_rf2, list(table(predicted = p$predictions, true=test$has_AE)))
+}
+
+print(paste("Sensitivity", sapply(results_rf2, calcSens) %>%
+        mean()))
+
+paste("Specificity", sapply(results_rf2, calcSpec) %>%
+        mean())
+}
+
+rffun2(test_both, 3)
+rffun2(test_re, 3)
+rffun2(train_data_all_30, 5.5)
+rffun2(train_data_all_90, 3.7) 
+rffun2(train_data_prev_30, 1)
+rffun2(train_data_prev_90, 1.3)
+rffun2(train_data_ser_30, 1.3)
+rffun2(train_data_ser_90, 1.3)
+```
+###Sensitivitet
+```{r, echo=FALSE}
+print(sens_rf2)
+```
+###Specificitet
+```{r, echo=FALSE}
+print(spec_rf2)
+```
+Resultatet är nästan samma som instrumentet trots att vi ej använder ICD-koder.
+
+Vi prövar några andra metoder.
+
+###Bagging
+```{r}
+for (i in 0:(no_splits-1)) {
+        if (i == 0) results_bag <- list()
+        
+        if (i == no_splits - 1) {
+                test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
+        } else {
+                test_rows <- shuffled[1:batch_size + i*batch_size]
+        }
+        train_rows <- shuffled[!(shuffled %in% test_rows)]
+        train <- no_na_data[train_rows, ]
+        test <- no_na_data[test_rows, ]
+        cross_model <- ranger(has_AE~., data = train, mtry = 13, case.weights = (1 +(train$has_AE == "No")*4.5))
+        p <- predict(cross_model, data = test)
+        results_bag <- append(results_bag, list(table(predicted = p$predictions, true=test$has_AE)))
+}
+
+sens_bag <- sapply(results_bag, calcSens) %>%
+        mean()
+
+spec_bag <- sapply(results_bag, calcSpec) %>%
+        mean()
+```
+###Sensitivitet
+```{r, echo=FALSE}
+print(sens_bag)
+```
+###Specificitet
+```{r, echo=FALSE}
+print(spec_bag)
+```
+###Logistisk regression
+```{r}
+logfun <- function(df, w){
+         no_splits <- 10
+shuffled <- sample(nrow(df), replace = FALSE)
+batch_size <- floor(length(shuffled)/no_splits)
+calcSens <- function(x) {
+        y <- x['Yes', 'Yes']/sum(x[ ,'Yes'])
+}
+calcSpec <- function(x) {
+        y <- x['No', 'No']/sum(x[ ,'No'])
+}
+        for (i in 0:(no_splits-1)) {
+        if (i == 0) results_log <- list()
+        
+        if (i == no_splits - 1) {
+                test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
+        } else {
+                test_rows <- shuffled[1:batch_size + i*batch_size]
+        }
+        train_rows <- shuffled[!(shuffled %in% test_rows)]
+        train <- df[train_rows, ]
+        test <- df[test_rows, ]
+        cross_model <- glm(has_AE ~., family = binomial(link = logit), data = train, weights = (1 +(train$has_AE == "No")*w)) 
+        p <- predict(cross_model, newdata = test, type = "response")
+        p <- ifelse(p > 0.5, "Yes", "No")
+        results_log <- append(results_log, list(table(predicted = p, true=test$has_AE)))
+}
+
+print(paste("Sensitivity", sapply(results_log, calcSens) %>%
+        mean()))
+
+paste("Specificity", sapply(results_log, calcSpec) %>%
+        mean())
+}
+
+logfun(test_both, 1)
+logfun(test_re, 1)
+logfun(train_data_all_30, 1.5)
+logfun(train_data_all_90, 1)
+logfun(train_data_prev_30, 0.8)
+logfun(train_data_prev_90, .3)
+logfun(train_data_ser_30, 1)
+logfun(train_data_ser_90, 1)
+```
+###Sensitivitet
+```{r, echo=FALSE}
+print(sens_log)
+
+```
+###Specificitet
+```{r, echo=FALSE}
+print(spec_log)
+
+```
+###Neurala nätverk
+```{r}
+nn_data <- no_na_data %>%
+        select(has_AE, sex, fx, age, los, readmissions, VTID_Mean, VTID_P50, VTID_P75, VTID_P90, VTID_P95, VTID_StdDev)
+nn_data$has_AE <- ifelse(nn_data$has_AE == "Yes", 1, 0)
+nn_data$fx <- ifelse(nn_data$fx == "Yes", 1, 0)
+nn_data$sex <- ifelse(nn_data$sex == "Female", 0, 1)
+scl <- function(x) {(x - min(x))/(max(x) - min(x))}
+nn_data[, 4:ncol(nn_data)] <- data.frame(lapply(nn_data[,4:ncol(nn_data)], scl))
+n <- names(nn_data)
+f <- as.formula(paste("has_AE ~", paste(n[!n %in% "has_AE"], collapse = " + ")))
+no_splits <- 10
+shuffled <- sample(nrow(nn_data), replace = FALSE)
+batch_size <- floor(length(shuffled)/no_splits)
+for (i in 0:(no_splits-1)) {
+        if (i == 0) results_nn <- list()
+
+        if (i == no_splits - 1) {
+                test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
+        } else {
+                test_rows <- shuffled[1:batch_size + i*batch_size]
+        }
+        train_rows <- shuffled[!(shuffled %in% test_rows)]
+        train <- nn_data[train_rows, ]
+        test <- nn_data[test_rows, ]
+        cross_model <- neuralnet(f, data = train, hidden = 3, act.fct = "logistic", linear.output = FALSE, lifesign = "minimal") 
+        p <- compute(cross_model, test[, -1])
+        p1 <- p$net.result
+        pred1 <- ifelse(p1>0.5, 1, 0)
+        results_nn <- append(results_nn, list(table(predicted = pred1, true=test$has_AE)))
+}
+calcSens_nn <- function(x) {
+        y <- x['1', '1']/sum(x[ ,'1'])
+}
+sens_nn <- sapply(results_nn, calcSens_nn) %>%
+        mean()
+calcSpec_nn <- function(x) {
+        y <- x['0' , '0']/sum(x[ ,'0'])
+}
+spec_nn <- sapply(results_nn, calcSpec_nn) %>%
+        mean()
+
+```
+###Sensitivitet
+```{r, echo=FALSE}
+print(sens_nn)
+```
+###Specificitet
+```{r, echo=FALSE}
+print(spec_nn)
+```
+####Vårdtid verkar vara den starkaste prediktorn och vi testade logistisk regression med endast vårdtid som prediktor
+```{r}
+for (i in 0:(no_splits-1)) {
+        if (i == 0) results_los <- list()
+        
+        if (i == no_splits - 1) {
+                test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
+        } else {
+                test_rows <- shuffled[1:batch_size + i*batch_size]
+        }
+        train_rows <- shuffled[!(shuffled %in% test_rows)]
+        train <- no_na_data[train_rows, ]
+        test <- no_na_data[test_rows, ]
+        cross_model <- glm(has_AE ~los, family = binomial(link = logit), data = train,weights = (1 +(train$has_AE == "No")*.6)) 
+        p <- predict(cross_model, newdata = test, type = "response")
+        p <- ifelse(p > 0.5, "Yes", "No")
+        results_los <- append(results_los, list(table(predicted = p, true=test$has_AE)))
+}
+
+sens_los <- sapply(results_los, calcSens) %>%
+        mean()
+
+spec_los <- sapply(results_los, calcSpec) %>%
+        mean()
+```
+###Sensitivitet
+```{r, echo=FALSE}
+print(sens_los)
+```
+###Specificitet
+```{r, echo=FALSE}
+print(spec_los)
+```
+###Vårdtid + återinläggningar
+```{r, include=FALSE}
+for (i in 0:(no_splits-1)) {
+        if (i == 0) results_los_readm <- list()
+        
+        if (i == no_splits - 1) {
+                test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
+        } else {
+                test_rows <- shuffled[1:batch_size + i*batch_size]
+        }
+        train_rows <- shuffled[!(shuffled %in% test_rows)]
+        train <- no_na_data[train_rows, ]
+        test <- no_na_data[test_rows, ]
+        cross_model <- glm(has_AE ~los+readmissions, family = binomial(link = logit), data = train,weights = (1 +(train$has_AE == "No")*.7)) 
+        p <- predict(cross_model, newdata = test, type = "response")
+        p <- ifelse(p > 0.5, "Yes", "No")
+        results_los_readm <- append(results_los_readm, list(table(predicted = p, true=test$has_AE)))
+}
+
+sens_los_readm <- sapply(results_los_readm, calcSens) %>%
+        mean()
+
+spec_los_readm <- sapply(results_los_readm, calcSpec) %>%
+        mean()
+```
+###Sensitivitet
+```{r, echo=FALSE}
+print(sens_los_readm)
+```
+###Specificitet
+```{r, echo=FALSE}
+print(spec_los_readm)
+```
+###Kontroll av eventuella interaktioner
+```{r}
+log <- glm(has_AE~.+los*age + los*VTID_StdDev + los*readmissions + age*readmissions, family = binomial(link = logit), data = no_na_data)
+anova(log, test = "Chisq")
+ result <- predict(log, type = 'response')
+ result <- ifelse(result > 0.5, "Yes", "No")
+```
+###Interaktion mellan ålder & vårdtid
+```{r, include=FALSE}
+for (i in 0:(no_splits-1)) {
+        if (i == 0) results_mult <- list()
+        
+        if (i == no_splits - 1) {
+                test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
+        } else {
+                test_rows <- shuffled[1:batch_size + i*batch_size]
+        }
+        train_rows <- shuffled[!(shuffled %in% test_rows)]
+        train <- no_na_data[train_rows, ]
+        test <- no_na_data[test_rows, ]
+        cross_model <- glm(has_AE ~.+age*los, family = binomial(link = logit), data = train,weights = (1 +(train$has_AE == "No")*.85)) 
+        p <- predict(cross_model, newdata = test, type = "response")
+        p <- ifelse(p > 0.5, "Yes", "No")
+        results_mult <- append(results_mult, list(table(predicted = p, true=test$has_AE)))
+}
+
+sens_mult <- sapply(results_mult, calcSens) %>%
+        mean()
+
+spec_mult <- sapply(results_mult, calcSpec) %>%
+        mean()
+```
+###Sensitivitet
+```{r, echo=FALSE}
+print(sens_mult)
+```
+###Specificitet
+```{r, echo=FALSE}
+print(spec_mult)
+```
+
+##Jämförelse av olika metoder
+
+| Metod     | Sensitivitet | Specificitet |
+|:---------:|:------------:|:------------:|
+| **ICD-koder** | **0.48**         | **0.81**         |
+| Random Forest| 0.40 | 0.80 |
+| Bagging | 0.38 | 0.80 |
+| Logistisk regression | 0.42 | 0.81 |
+| *Neurala nätverk* | *0.80* | *0.45* |
+|**Logistisk regression med:**| | |
+| Endast vårdtid | 0.40 | 0.80 |
+|Vårdtid + återinläggningar | 0.45 | 0.80 |
+| Alla variabler + interaktion vårdtid och ålder | 0.45 | 0.81 |
+
+```{r}
+
+```
+bra för att fixa faktorer 
+train_data_all_90$residence %<>% factor
+train_data_all_90$city %<>% factor
+```
+
