@@ -9,9 +9,9 @@ library(ranger)
 library(neuralnet)
 library(nnet)
 rm(list = ls())
-data_1 <- read.csv("/Users/martinmagneli/Desktop/Testanalys VARA/tab_1_alder.csv", encoding="latin1")
-data_2 <- read.csv("/Users/martinmagneli/Desktop/Testanalys VARA/tab_1_kon.csv", encoding="latin1")
-data_3 <- read.csv("/Users/martinmagneli/Desktop/Testanalys VARA/tab_3.csv", encoding="latin1", dec = ",", na.strings = ".")
+data_1 <- read.csv("/Volumes/NO NAME/VARA_DATA_orginal/tab_1_alder.csv", encoding="latin1")
+data_2 <- read.csv("/Volumes/NO NAME/VARA_DATA_orginal/tab_1_kon.csv", encoding="latin1")
+data_3 <- read.csv("/Volumes/NO NAME/VARA_DATA_orginal/tab_3.csv", encoding="latin1", dec = ",", na.strings = ".")
 
 data_3$VTID_Median <- NULL
 base_location <- file.path("/Volumes/NO NAME/VARA_DATA_orginal/")
@@ -26,7 +26,7 @@ encoding_type = "latin1"
      #   filter(serial_no != "12463" & serial_no != "10652") #%>% #excluding 2
        # sample_n(1332) # subset of patients for trainingset
 
-#write.csv(keys, file = "selectedpatients.csv") #only use this sample, # away above
+#write.csv(keys, file = "selectedpatients.csv") #only use this sample
 
 fn <- file.path(base_location, "aestudiepopvkedj.txt")
 ac <- read.delim(file=fn, 
@@ -43,7 +43,7 @@ ac <- ac %>% select(pnr = Personnummer
                     , readm_group = Återinläggningsgrupp
                     , los_group = Vårdtidsindelningsgrupp) 
 
-keys2 <- read.csv("selectedpatients.csv") %>%
+keys2 <- read.csv("/Volumes/NO NAME/VARA_DATA_orginal/selectedpatients.csv") %>%
         select(serial_no, pnr) 
 
 ac <- left_join(keys2, ac, by = "pnr")
@@ -285,7 +285,7 @@ ICD_low <- c("C", #tumors,
 
 train_data <- select(master, AEs, sex, age, fx, op_date, los, readmissions
                      , type, VTID_P50, VTID_P75, VTID_P90, VTID_P95
-                     , VTID_Mean, VTID_StdDev, pos_code) #, pos_90 tar bort vet ej varför denna stod här??
+                     , VTID_Mean, VTID_StdDev) #, pos_code) #, pos_90 tar bort vet ej varför denna stod här??
 train_data <- mutate(train_data, type = factor(type, labels=c("countypart", "county", "private", "university"))
                     , sex = factor(sex, labels=c("Male", "Female"))
                     , fx = factor(fx, labels=c("Yes", "No"))) 
