@@ -9,24 +9,21 @@ library(ranger)
 library(neuralnet)
 library(nnet)
 rm(list = ls())
-data_1 <- read.csv("/Volumes/NO NAME/VARA_DATA_orginal/tab_1_alder.csv", encoding="latin1")
-data_2 <- read.csv("/Volumes/NO NAME/VARA_DATA_orginal/tab_1_kon.csv", encoding="latin1")
 data_3 <- read.csv("/Volumes/NO NAME/VARA_DATA_orginal/tab_3.csv", encoding="latin1", dec = ",", na.strings = ".")
-
 data_3$VTID_Median <- NULL
+
 base_location <- file.path("/Volumes/NO NAME/VARA_DATA_orginal/")
 encoding_type = "latin1"
 
-#fn_key <- file.path(base_location, "key_file.csv")
-#keys <- read.csv2(file=fn_key, 
-                 # header=TRUE, 
-                  #encoding=encoding_type, 
-                  #stringsAsFactors=FALSE)  
-#train_keys <- select(keys, serial_no, pnr = Personnummer) %>%
-     #   filter(serial_no != "12463" & serial_no != "10652") #%>% #excluding 2
-       # sample_n(1332) # subset of patients for trainingset
-
-#write.csv(keys, file = "selectedpatients.csv") #only use this sample
+# fn_key <- file.path(base_location, "key_file.csv")
+# keys <- read.csv2(file=fn_key, 
+#                   header=TRUE, 
+#                   encoding=encoding_type, 
+#                   stringsAsFactors=FALSE)  
+# train_keys <- select(keys, serial_no, pnr = Personnummer) %>%
+# filter(serial_no != "12463" & serial_no != "10652") #%>% #excluding 2
+# sample_n(1332) # subset of patients for trainingset
+# write.csv(keys, file = "selectedpatients.csv") #only use this sample
 
 fn <- file.path(base_location, "aestudiepopvkedj.txt")
 ac <- read.delim(file=fn, 
@@ -55,7 +52,6 @@ index <- read.delim(file=fn,
                     stringsAsFactors=FALSE) %>%
         select(pnr = Personnummer, sex = Kön, age = Ålder.vid.utskrivning
                , hospital = Sjukhus..klartext, residence = Hemförsamling, city = Hemkommun)
-
 
 index <- left_join(keys2, index, by = "pnr") %>%
         distinct(serial_no, .keep_all = T) %>%
@@ -107,7 +103,7 @@ sp_total <- sp %>%
                , disc_date
                , re_hospital)
 
-#readmission
+#readmissions
 sp_total$adm_date <- as.Date(sp_total$adm_date)
 sp_total$disc_date <- as.Date(sp_total$disc_date)
 sp_total$op_date <- as.Date(sp_total$op_date)
@@ -210,25 +206,7 @@ groupHosp <- function(df) {
 master <- groupHosp(master)
 rm(fn, found_AEs, sp, sp_12, sp_prim, sp_total, readm, AEs, ae_data)
 
-# master <- mutate(master, age_cat = if_else(age >= 40 & age < 50, 1
-#                                            , if_else(age >= 50 & age < 60, 2
-#                                            , if_else(age >= 60 & age < 70, 3
-#                                            , if_else(age >= 70 & age < 80, 4
-#                                            , if_else(age >= 80 & age < 85, 5
-#                                            , if_else(age >= 85 & age < 90, 6
-#                                            , if_else(age >= 90 & age < 95, 7
-#                                            , if_else(age >= 95, 8, 9)))))))))
-
 master$op_date <- lubridate::year(master$op_date)
-
-# master <- master %>%  #Grouping by percentiles
-#         mutate(LOS_grp = if_else(los_group == " 0- 55  med AE", "0 - 55"
-#                         , if_else(los_group == " 0- 55 utan AE", "0 - 55"
-#                         , if_else(los_group == "56- 80  med AE", "56 - 80"
-#                         , if_else(los_group == "56- 80 utan AE", "56 - 80"
-#                         , if_else(los_group == "81-100  med AE", "81 - 100"
-#                         , if_else(los_group == "81-100 utan AE", "81 - 100"
-#                         , "readmission")))))))
 
 ag_data <- data_3 %>%
         rename(type = sjktyp, op_date = AR, sex = KON, age = ALDER, fx = fraktur) %>%
@@ -238,48 +216,6 @@ ag_data <- data_3 %>%
                , fx = factor(fx, labels=c("Yes", "No"))) 
 
 master <- left_join(master, ag_data, by = c("type", "op_date", "age", "sex", "fx"))
-# quantile(master$los, c(0.50, 0.75, 0.90, 0.95))
-# master <- master %>%
-#         mutate(los_perc = if_else(los < 7, "0 - 49"
-#                         , if_else(los >= 7 & los < 13, "50 - 74"
-#                         , if_else(los >= 13 & los < 20, "75 - 89"
-#                         , if_else(los >= 20 & los < 25, "90 - 94"
-#                         , if_else(los >= 25 , "95 - 100", "wrong"))))))
-
-
-NAs <- filter(master, is.na(VTID_StdDev)) # NAs, S:t Göran fractures considered county hospital
-NAS2 <- filter(master, is.na(VTID_P50))
-ICD_low <- c("C", #tumors, 
-             "D", #hematologi except D629 stor blödning and D649 anemia,
-             "F", #psyc,
-             "G", #Neuro
-             "H", #ÖNH
-             "K", #gastro ev K251 perforation ulcus
-             "L", #hud ev L024 inf underhud
-             "N", #uro
-             "O", #gyn
-             "Q", #missbildn ev Q65 höftmissbildn
-             "R") #symtom
-
-#ICD_high = c("T81[034]", "L899", "T84[05]", "S730", "T933", "I", "J819", "J1[358]", "R33")
-
-#I, J819, J13, J15, J18, R33 eller något av följande koder som en bi-diagnos: I803,
-#I269, L899, M243, M244, S730, T810, T813, T814, T840, T845, T933
-#imputating data on NAs
-
-
-# master[master$serial_no == 808, 20] <- 5.5076
-# master[master$serial_no == 19998, 15:20] <-c(9.5, 13.0, 13.0, 13.0, 9.5000, 4.9497)
-# master[master$serial_no == 18043, 20] <- 4.2426
-# master[master$serial_no == 19943, 20] <- 2.1213
-# master[master$serial_no == 18357, 20] <- 1.4142
-# master[master$serial_no == 4554, 20] <- 1.4142
-# master[master$serial_no == 19314, 15:20] <-c(3.0, 4.0, 4.0, 4.0, 3.4000, 0.5477)
-# master[master$serial_no == 19763, 15:20] <-c(5.0, 5.0, 5.0, 5.0, 5.0000, "NA")
-# master[master$serial_no == 44, 15:20] <-c(7.0, 12.0, 12.0, 12.0, 7.0000, 5.0000)
-# master[master$serial_no == 1371, 15:20] <-c(3.0, 3.0, 3.0, 3.0, 3.0000, 0.0000)
-# master[master$serial_no == 19156, 15:20] <-c(7.0, 7.0, 7.0, 7.0, 7.0000, "NA")
-
 
 ###### start of analysis
 
@@ -548,3 +484,38 @@ aes <- ae_data
 aes <- select(aes, serial_no, pos_30, pos_90)
 test <- semi_join(aes, master, by = "serial_no")
 master <- left_join(master, aes, by = "serial_no")
+
+
+##########
+# ICD_low <- c("C", #tumors, 
+#              "D", #hematologi except D629 stor blödning and D649 anemia,
+#              "F", #psyc,
+#              "G", #Neuro
+#              "H", #ÖNH
+#              "K", #gastro ev K251 perforation ulcus
+#              "L", #hud ev L024 inf underhud
+#              "N", #uro
+#              "O", #gyn
+#              "Q", #missbildn ev Q65 höftmissbildn
+#              "R") #symtom
+
+#ICD_high = c("T81[034]", "L899", "T84[05]", "S730", "T933", "I", "J819", "J1[358]", "R33")
+
+#I, J819, J13, J15, J18, R33 eller något av följande koder som en bi-diagnos: I803,
+#I269, L899, M243, M244, S730, T810, T813, T814, T840, T845, T933
+#imputating data on NAs
+
+NAs <- filter(master, is.na(VTID_StdDev)) # NAs, S:t Göran fractures considered county hospital
+NAS2 <- filter(master, is.na(VTID_P50))
+
+# master[master$serial_no == 808, 20] <- 5.5076
+# master[master$serial_no == 19998, 15:20] <-c(9.5, 13.0, 13.0, 13.0, 9.5000, 4.9497)
+# master[master$serial_no == 18043, 20] <- 4.2426
+# master[master$serial_no == 19943, 20] <- 2.1213
+# master[master$serial_no == 18357, 20] <- 1.4142
+# master[master$serial_no == 4554, 20] <- 1.4142
+# master[master$serial_no == 19314, 15:20] <-c(3.0, 4.0, 4.0, 4.0, 3.4000, 0.5477)
+# master[master$serial_no == 19763, 15:20] <-c(5.0, 5.0, 5.0, 5.0, 5.0000, "NA")
+# master[master$serial_no == 44, 15:20] <-c(7.0, 12.0, 12.0, 12.0, 7.0000, 5.0000)
+# master[master$serial_no == 1371, 15:20] <-c(3.0, 3.0, 3.0, 3.0, 3.0000, 0.0000)
+# master[master$serial_no == 19156, 15:20] <-c(7.0, 7.0, 7.0, 7.0, 7.0000, "NA")
