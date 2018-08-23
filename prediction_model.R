@@ -15,16 +15,6 @@ data_3$VTID_Median <- NULL
 base_location <- file.path("/Volumes/NO NAME/VARA_DATA_orginal/")
 encoding_type = "latin1"
 
-# fn_key <- file.path(base_location, "key_file.csv")
-# keys <- read.csv2(file=fn_key, 
-#                   header=TRUE, 
-#                   encoding=encoding_type, 
-#                   stringsAsFactors=FALSE)  
-# train_keys <- select(keys, serial_no, pnr = Personnummer) %>%
-# filter(serial_no != "12463" & serial_no != "10652") #%>% #excluding 2
-# sample_n(1332) # subset of patients for trainingset
-# write.csv(keys, file = "selectedpatients.csv") #only use this sample
-
 fn <- file.path(base_location, "aestudiepopvkedj.txt")
 ac <- read.delim(file=fn, 
                  header=TRUE, 
@@ -138,7 +128,7 @@ master$readmissions[is.na(master$readmissions)] <- 0
 fn <- file.path(base_location, "ae_data.csv")
 ae_data <- read.csv(file=fn, encoding=encoding_type)
 found_AEs <- ae_data %>%
-        filter(causality > 2 ) %>%  #all AEs
+        filter(causality > 2) %>% # & avoidability > 2) %>%  #all AEs
         select(serial_no)
 
 AEs <- found_AEs %>%
@@ -203,7 +193,8 @@ groupHosp <- function(df) {
                                         , "private"
                                         , "countypart"))))
 }
-master <- groupHosp(master)
+master <- groupHosp(master) %>%
+ distinct(serial_no, .keep_all = T)
 rm(fn, found_AEs, sp, sp_12, sp_prim, sp_total, readm, AEs, ae_data)
 
 master$op_date <- lubridate::year(master$op_date)
@@ -229,6 +220,8 @@ train_data <- mutate(train_data, type = factor(type, labels=c("countypart", "cou
 no_na_data <- na.omit(train_data)
 no_na_data$has_AE <- factor(no_na_data$AEs > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
 no_na_data$AEs <- NULL
+# no_na_data$has_readm <- factor(no_na_data$readmissions > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+# no_na_data$readmissions <- NULL
 rf <- randomForest(has_AE~., data = no_na_data)
 summary(rf)
 rf
@@ -486,7 +479,17 @@ test <- semi_join(aes, master, by = "serial_no")
 master <- left_join(master, aes, by = "serial_no")
 
 
-##########
+########## additional code
+
+# fn_key <- file.path(base_location, "key_file.csv")
+# keys <- read.csv2(file=fn_key, 
+#                   header=TRUE, 
+#                   encoding=encoding_type, 
+#                   stringsAsFactors=FALSE)  
+# train_keys <- select(keys, serial_no, pnr = Personnummer) %>%
+# filter(serial_no != "12463" & serial_no != "10652") #%>% #excluding 2
+# sample_n(1332) # subset of patients for trainingset
+# write.csv(keys, file = "selectedpatients.csv") #only use this sample
 # ICD_low <- c("C", #tumors, 
 #              "D", #hematologi except D629 stor blödning and D649 anemia,
 #              "F", #psyc,

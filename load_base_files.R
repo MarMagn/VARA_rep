@@ -113,3 +113,4 @@ mort <- left_join(dead, ac, by = "pnr") %>%
         select(serial_no, death_date, death_cause)
 
 rm(sp, sp_12, fn_key)
+
