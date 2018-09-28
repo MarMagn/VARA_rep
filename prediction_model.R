@@ -276,9 +276,12 @@ for (i in 0:(no_splits-1)) {
         test <- no_na_data[test_rows, ]
         cross_model <- ranger(has_AE~., data = train, case.weights = (1 +(train$has_AE == "No")*3.5))
         p <- predict(cross_model, data = test)
-        #table(p, test$has_AE))
+        rangerRoc <- data.frame(response = test$has_AE, predictor = p$predictions) %>% 
+          arrange(predictor) %>% 
+          with(., roc(response, predictor))
         results <- append(results, list(table(predicted = p$predictions, true=test$has_AE)))
-}
+        
+        }
 
 
 sens_rf_2 <- sapply(results, calcSens) %>%
@@ -286,23 +289,99 @@ sens_rf_2 <- sapply(results, calcSens) %>%
 
 spec_rf_2 <- sapply(results, calcSpec) %>%
         mean()
-#######Logistic regression
+#ROC
+train <- mutate(train, has_AE = if_else(has_AE == "Yes", 1, 0))
+test <- mutate(test, has_AE = if_else(has_AE == "Yes", 1, 0))
 
-log <- glm(has_AE~.+los*age + los*VTID_StdDev + los*readmissions + age*readmissions, family = binomial(link = logit), data = no_na_data)
+my_rf <- ranger(has_AE~., data = train)
+pred <- predict(my_rf, data = test)
+library(pROC)
+rangerRoc <- data.frame(response = test$has_AE, predictor = pred$predictions) %>% 
+  arrange(predictor) %>% 
+  with(., roc(response, predictor))
+rangerRoc %>% plot
+auc(rangerRoc)
+
+my_rf <- randomForest(has_AE~., data = train)
+pred <- predict(my_rf, data = test)
+plotROC(table(test$has_AE, pred))
+
+
+table(pred)
+
+
+data(iris)
+
+x <- iris
+library(caret)
+library(pROC)
+iris <- iris[iris$Species == "virginica" | iris$Species == "versicolor", ]
+iris$Species <- factor(iris$Species)  # setosa should be removed from factor
+
+samples <- sample(NROW(iris), NROW(iris) * .5)
+data.train <- iris[samples, ]
+data.test <- iris[-samples, ]
+forest.model <- train(Species ~., data.train)
+
+result.predicted.prob <- predict(forest.model, data.test, type="prob") # Prediction
+
+result.roc <- roc(data.test$Species, result.predicted.prob$versicolor) # Draw ROC curve.
+plot(result.roc, print.thres="best", print.thres.best.method="closest.topleft")
+
+result.coords <- coords(result.roc, "best", best.method="closest.topleft", ret=c("threshold", "accuracy"))
+print(result.coords)#to get threshold and accuracy
+
+x.model <- train(has_AE~. , train_d)
+result.x.prob <- predict(x.model, test_d, type = "prob")
+result.x.roc <- roc(test_d$has_AE, result.x.prob$Yes)
+plot(result.x.roc, print.thres="best", print.thres.best.method="closest.topleft")
+
+log <- glm(has_AE~., family = binomial(link = logit), data = train)
 # anova(log, test = "Chisq")
- result <- predict(log, type = 'response')
- result <- ifelse(result > 0.5, "Yes", "No")
+logitMod <- glm(has_AE ~., data=train, family=binomial(link="logit"))
+
+predicted <- plogis(predict(logitMod, newdata = test))  # predicted scores
+# or
+predicted <- predict(logitMod, test, type="response")  
+optCutOff <- optimalCutoff(test$has_AE, predicted)[1]
+plotROC(test$has_AE, predicted)
+result <- predict(log, type = 'response')
+ result <- ifelse(result > optCutOff, "Yes", "No")
 
 a <- table(test=result, true = no_na_data$has_AE)
  #misClasificError <- mean(result != test$has_AE)
  #print(paste('Accuracy', 1-misClasificError))
  x <- calcSens(a)
  y <- calcSpec(a)
-# cross_model <- glm(has_AE ~ los, family = binomial(link = logit), data = train)
-# p <- predict(cross_model, newdata = test, type = "response")
-# p <- ifelse(p > 0.5, "Yes", "No")
-# results <- append(results, list(table(predicted = p, true=test$has_AE)))
-# table(result, true = no_na_data$has_AE)
+ test <- mutate(test, has_AE = if_else(has_AE == "Yes", 1, 0))
+train <- mutate(train, has_AE = if_else(has_AE == "Yes", 1, 0))
+ logitMod <- glm(has_AE ~ ., data=train, family=binomial(link="logit"))
+ 
+predicted <- predict(logitMod, test, type="response")  
+optCutOff <- optimalCutoff(test$has_AE, predicted)[1] 
+summary(logitMod)
+vif(logitMod)
+misClassError(test$has_AE, predicted, threshold = optCutOff)
+plotROC(test$has_AE, predicted)
+
+sensitivity(test$has_AE, predicted, threshold = optCutOff)
+
+my_rf <- randomForest(has_AE~., data = train)
+pred <- predict(my_rf, newdata = test)
+plotROC(test$has_AE, pred)
+ 
+ table(test$has_AE, pred)
+ 
+cross_model <- glm(has_AE ~ los, family = binomial(link = logit), data = train)
+p <- predict(cross_model, newdata = test, type = "response")
+p <- ifelse(p > 0.5, "Yes", "No")
+
+
+
+table(result, true = no_na_data$has_AE)
+
+
+
 for (i in 0:(no_splits-1)) {
         if (i == 0) results <- list()
         
@@ -318,7 +397,7 @@ for (i in 0:(no_splits-1)) {
         test <- no_na_data[test_rows, ]
         cross_model <- glm(has_AE ~., family = binomial(link = logit), data = train) #1 will give similar results, otherwise sens 73 and spec 54
         p <- predict(cross_model, newdata = test, type = "response")
-        p <- ifelse(p > 0.5, "Yes", "No")
+        p <- ifelse(p > 0.337, "Yes", "No")
         results <- append(results, list(table(predicted = p, true=test$has_AE)))
 }
 
@@ -327,6 +406,11 @@ sens_log1 <- sapply(results, calcSens) %>%
 
 spec_log1 <- sapply(results, calcSpec) %>%
         mean()
+###############
+log <- glm(has_AE~., family = binomial(link = logit), data = train)
+result <- predict(log, type = 'response')
+result <- ifelse(result > 0.5, "Yes", "No")
+
 #######bagging , weights = (1 +(train$has_AE == "No")*1)
 
 no_splits <- 10
