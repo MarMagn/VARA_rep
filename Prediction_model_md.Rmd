@@ -5,12 +5,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-```
 
-Loading base data
-
-```{r}
-library(tidyr)
 library(dplyr)
 library(Gmisc)
 library(tidyverse)
@@ -19,19 +14,25 @@ library(randomForest)
 library(ranger)
 library(neuralnet)
 library(nnet)
+library(e1071)
+library(splines)
+library(magrittr)
+library(InformationValue)
+library(tensorflow)
+library(keras)
 ```
-
+*Loading base data, calculating spec and sens for codes*
 ```{r}
 rm(list = ls())
 source("load_base_files.R")
-data_3 <- read.csv("/Volumes/NO NAME/VARA_DATA_orginal/tab_3.csv", encoding="latin1", dec = ",", na.strings = ".")
+data_3 <- read.csv("/Volumes/NO NAME/VARA_DATA_orginal/tab_3.csv", encoding="latin1", dec = ",", na.strings = ".") #aggregated data
 data_3$VTID_Median <- NULL
 
 base_location <- file.path("/Volumes/NO NAME/VARA_DATA_orginal/")
 encoding_type = "latin1"
 
 keys2 <- read.csv("/Volumes/NO NAME/VARA_DATA_orginal/selectedpatients.csv") %>%
- select(-X)
+ select(-X) #Selecting trainding data
 
 ac <- select(ac, - serial_no)
 ac <- left_join(keys2, ac, by = "pnr")
@@ -41,8 +42,8 @@ index <- read.delim(file=fn,
                     header=TRUE, 
                     encoding=encoding_type, 
                     stringsAsFactors=FALSE) %>%
-        select(pnr=Personnummer, age = Ålder.vid.utskrivning
-               , hospital = Sjukhus..klartext, residence = Hemförsamling, city = Hemkommun)
+        select(pnr=Personnummer, hospital = Sjukhus..klartext, residence = Hemförsamling
+               , city = Hemkommun, county = Hemlän)
 
 index <- left_join(keys2, index, by = "pnr") %>%
         distinct(serial_no, .keep_all = T) %>%
@@ -50,7 +51,7 @@ index <- left_join(keys2, index, by = "pnr") %>%
 index <- index %>% mutate(fx = factor(fx, levels=c("Ja", "Nej")
                                       , labels=c("Yes", "No"))
                           , sex = factor(sex, labels=c("Male", "Female"))) %>%
-        select(serial_no, pnr = pnr.x, sex, age, los, fx, prim_clin, op_date, los_group, readm_group, residence, city)
+        select(serial_no, pnr = pnr.x, sex, age, los, fx, prim_clin, op_date, los_group, readm_group, residence, city, county, cause)
 
 #readmissions
 sp_total$adm_date <- as.Date(sp_total$adm_date)
@@ -110,8 +111,9 @@ ae_data <- ae_data %>%
         mutate(pos_30 = if_else(ae_30 == 1 | dead_30 == 1, 1, 0)) %>%
         mutate(pos_90 = if_else(ae_90 == 1 | dead_90 == 1, 1, 0)) %>%
         select(serial_no, pos_30, pos_90)
-rm(fn, codes_all, codes_main, sp_total, dead, mort, sp_prim, dead_index, re_30, re_90)
+rm(fn, codes_all, codes_main, sp_total, dead, mort, sp_prim, dead_index, re_30, re_90, keys)
 
+#Adding AEs from the RRR-set
 fn <- file.path(base_location, "ae_data.csv")
 rrr_data <- read.csv(file=fn, encoding=encoding_type)
 
@@ -126,22 +128,20 @@ aes <- aes %>%
         mutate(rrr_30 = if_else(event_date - op_date <= 30 , 1, 0)) %>%
         mutate(rrr_90 = if_else(event_date - op_date <= 90 , 1, 0)) 
 
-x <- aes %>%
+rrr_30 <- aes %>%
  filter(rrr_30 == 1) %>%
  distinct(serial_no, .keep_all = T) %>%
  select(serial_no, rrr_30)
 
-y <- aes %>%
+rrr_90 <- aes %>%
  filter(rrr_90 == 1) %>%
  distinct(serial_no, .keep_all = T) %>%
  select(serial_no, rrr_90)
 
-q <- left_join(y, x, by = "serial_no")
+rrr_all <- left_join(rrr_90, rrr_30, by = "serial_no")
+rrr_all$rrr_30[is.na(rrr_all$rrr_30)] <- 0
 
-q$rrr_30[is.na(q$rrr_30)] <- 0
-
-
-AE_frame <- left_join(ae_data, q, by = "serial_no")
+AE_frame <- left_join(ae_data, rrr_all, by = "serial_no")
 AE_frame$rrr_30[is.na(AE_frame$rrr_30)] <- 0
 AE_frame$rrr_90[is.na(AE_frame$rrr_90)] <- 0
 catFun <- function(df) {
@@ -155,18 +155,27 @@ catFun <- function(df) {
         df <- select(df, serial_no, cat_30, cat_90)
 }
 AE_frame <- catFun(AE_frame)
+#rm(ac, aes, keys2, rrr_30, rrr_90)
 ```
-Sensitivitet (90 dagar) för instrumenten baserat på ICD-koder
-======================
+**Sensitivity/Specificity 90 days**
 ```{r}
+
+x <- table(AE_frame$cat_30)
+sens = x['TP']/(x['TP']+x['FN'])
+spec = x['TN']/(x['TN']+x['FP']) 
+auc = sens * spec + sens * (1-spec)/2 + spec*(1-sens)/2
+res_30 <- c(sens[[1]], spec[[1]], auc[[1]])
 x <- table(AE_frame$cat_90)
-x['TP']/(x['TP']+x['FN'])
-```
-**Specificitet**
-```{r}
-x['TN']/(x['TN']+x['FP'])
+sens = x['TP']/(x['TP']+x['FN'])
+spec = x['TN']/(x['TN']+x['FP']) 
+auc = sens * spec + sens * (1-spec)/2 + spec*(1-sens)/2
+res_90 <- c(sens[[1]], spec[[1]], auc[[1]])
+all_results[['Open comparison 30 days']] <- res_30
+all_results[['Open comparison 90 days']] <- res_90
+
 ```
 
+*Preparing dataset fot analysis and modelling*
 ```{r}
 master <- left_join(index, readm, by = "serial_no") %>%
         select(serial_no
@@ -178,22 +187,23 @@ master <- left_join(index, readm, by = "serial_no") %>%
                , los
                , readmissions
                , op_date, los_group, readm_group
-               , residence, city)
+               , residence, city, county, cause)
 
 master$readmissions[is.na(master$readmissions)] <- 0
+
 #adding aes
+# found_AEs <- rrr_data %>%
+#         filter(causality > 2) %>% # & avoidability > 2) %>%  #all AEs
+#         select(serial_no)
+# 
+# AEs <- found_AEs %>%
+#         group_by(serial_no) %>%
+#         mutate(AEs = n()) %>%
+#         distinct(.keep_all = TRUE) 
 
-found_AEs <- rrr_data %>%
-        filter(causality > 2) %>% # & avoidability > 2) %>%  #all AEs
-        select(serial_no)
-
-AEs <- found_AEs %>%
-        group_by(serial_no) %>%
-        mutate(AEs = n()) %>%
-        distinct(.keep_all = TRUE) 
-
-master <- left_join(master, AEs, by = "serial_no") %>%
-        select(serial_no, sex, age, fx, op_date, hospital, los, readmissions, AEs, los_group, readm_group, residence, city)
+master <- left_join(master, rrr_30, by = "serial_no")
+master <- left_join(master, rrr_90, by = "serial_no") %>%
+        select(serial_no, rrr_30, rrr_90, sex, age, fx, op_date, hospital, los, readmissions, los_group, readm_group, residence, city, county, cause)
 master[is.na(master)]<- 0
 
 groupHosp <- function(df) {
@@ -252,7 +262,6 @@ groupHosp <- function(df) {
 master <- groupHosp(master) %>%
  distinct(serial_no, .keep_all = T)
 
-
 master$op_date <- lubridate::year(master$op_date)
 
 ag_data <- data_3 %>%
@@ -260,219 +269,501 @@ ag_data <- data_3 %>%
         mutate(type = factor(type, levels=c("Länsdelssjukhus", "Länssjukhus", "Privatsjukhus", "Universitetssjukhus")
                 , labels=c("countypart", "county", "private", "university"))
                , sex = factor(sex, labels=c("Male", "Female", "Both"))
-               , fx = factor(fx, labels=c("Yes", "No"))) 
+               , fx = factor(fx, labels=c("Yes", "No")))
 
 master <- left_join(master, ag_data, by = c("type", "op_date", "age", "sex", "fx"))
 ```
+*Removing NAs*
 ```{r}
-train_data <- select(master, AEs, sex, age, fx, op_date, los, readmissions
-                     , type, city, residence, VTID_P50, VTID_P75, VTID_P90, VTID_P95
-                     , VTID_Mean, VTID_StdDev) 
-train_data <- mutate(train_data, type = factor(type, labels=c("countypart", "county", "private", "university"))
+train_data <- select(master, rrr_30, rrr_90, sex, age, fx, op_date, los, readmissions
+                     , type, VTID_P50, VTID_P75, VTID_P90, VTID_P95
+                     , VTID_Mean, VTID_StdDev)#, cause, county) # city, residence,
+train_data <- mutate(train_data, type = factor(type, labels=c("countypart", "central_county", "private", "university"))
                     , sex = factor(sex, labels=c("Male", "Female"))
-                    , fx = factor(fx, labels=c("Yes", "No"))) 
+                    , fx = factor(fx, labels=c("Fracture", "Elective")))
 
 no_na_data <- na.omit(train_data)
-no_na_data$has_AE <- factor(no_na_data$AEs > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
-no_na_data$AEs <- NULL
+no_na_data_n <- no_na_data
+
+no_na_data$rrr_30 <- factor(no_na_data$rrr_30 > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+no_na_data$rrr_90 <- factor(no_na_data$rrr_90 > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+data_30_n <- select(no_na_data_n, -rrr_90, has_AE = rrr_30)
+data_30 <- select(no_na_data, -rrr_90, has_AE = rrr_30)
+
+data_90_n <- select(no_na_data_n, -rrr_30, has_AE = rrr_90)
+data_90 <- select(no_na_data, -rrr_30, has_AE = rrr_90)
+# no_na_data_n <- mutate(no_na_data, has_AE = if_else(AEs > 0, 1, 0))
+# no_na_data_n$AEs <- NULL
+# no_na_data$AEs <- NULL
+#na_data <- train_data %>%
+# filter(!complete.cases(.))
+# no_na_data$county <- as.factor(no_na_data$county)
+# no_na_data$cause <- as.factor(no_na_data$cause)
 # no_na_data$has_readm <- factor(no_na_data$readmissions > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
 # no_na_data$readmissions <- NULL
+rm(AE_frame, AEs, ag_data, data_3,found_AEs, index, readm, rrr_all, rrr_data)
 ```
-random forest
-```{r}
-no_splits <- 10
-shuffled <- sample(nrow(no_na_data), replace = FALSE)
-batch_size <- floor(length(shuffled)/no_splits)
-for (i in 0:(no_splits-1)) {
-        if (i == 0) results <- list()
 
-        if (i == no_splits - 1) {
-                test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
-        } else {
-                test_rows <- shuffled[1:batch_size + i*batch_size]
-        }
-        train_rows <- shuffled[!(shuffled %in% test_rows)]
-        #print(test)
-        train <- no_na_data[train_rows, ]
-        #test_rows <- shuffled[!(shuffled %in% train)]
-        test <- no_na_data[test_rows, ]
-        cross_model <- randomForest(has_AE ~ ., data = train)
-        p <- predict(cross_model, newdata = test)
-        #table(p, test$has_AE))
-        results <- append(results, list(table(predicted = p, true=test$has_AE)))
-}
+```{r}
 calcSens <- function(x) {
         y <- x['Yes', 'Yes']/sum(x[ ,'Yes'])
 }
-sens_rf <- sapply(results, calcSens) %>%
-        mean()
 calcSpec <- function(x) {
         y <- x['No', 'No']/sum(x[ ,'No'])
 }
 
-spec_rf <- sapply(results, calcSpec) %>%
-        mean()
-print(sens_rf)
-print(spec_rf)
-```
+getSensSpec <- function(my_data, getModelResults, no_splits = 10) {
+  shuffled <- sample(nrow(my_data), replace = FALSE)
+  batch_size <- floor(length(shuffled)/no_splits)
+  results <- list()
+  for (i in 0:(no_splits-1)) {
+    if (i == no_splits - 1) {
+      test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
+    } else {
+      test_rows <- shuffled[1:batch_size + i*batch_size]
+    }
+    train_rows <- shuffled[!(shuffled %in% test_rows)]
+    train <- my_data[train_rows, ]
+    test <- my_data[test_rows, ]
+    
+    results <- append(results, getModelResults(train = train, test = test))
+  }
+  c(sens = calcSens(results[[1]]) %>%
+      mean(),
+    spec = calcSpec(results[[1]]) %>%
+      mean(),
+    AUC = results[[2]] %>%
+      mean())
+}
+  
 
-```{r}
-for (i in 0:(no_splits-1)) {
-        if (i == 0) results_rf2 <- list()
-        
-        if (i == no_splits - 1) {
-                test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
-        } else {
-                test_rows <- shuffled[1:batch_size + i*batch_size]
-        }
-        train_rows <- shuffled[!(shuffled %in% test_rows)]
-        train <- no_na_data[train_rows, ]
-        test <- no_na_data[test_rows, ]
-        cross_model <- ranger(has_AE~., data = train, case.weights = (1 +(train$has_AE == "No")*3.7))
-        p <- predict(cross_model, data = test)
-        results_rf2 <- append(results_rf2, list(table(predicted = p$predictions, true=test$has_AE)))
+# TODO - test without crossvalidation, i.e. just directly calculate the sens/spec
+# probably not a good idea as test/train must differ
+getSensSpecBoot <- function(my_data, ...) {
+  bootResults <- boot(data = my_data, 
+                      R = 100, 
+                      parallel = 'multicore',
+                      statistic = function(data, indices) {
+                        getSensSpec(my_data = data[indices, ], ...)
+                      })
+  
+  sapply(1:length(bootResults$t0), function(i) {
+    name <- names(bootResults$t0)[i]
+    res <- c(
+      bootResults$t0[i],
+      boot.ci(bootResults, type="perc", index=i)$percent[4:5])
+    names(res) <- c(name, paste(name, c("2.5", "97.5")))
+    return(list(res))
+  }) %>% do.call(c, .)
 }
 
-sens_rf2 <- sapply(results_rf2, calcSens) %>%
-        mean()
+all_results = list()
+class(all_results) <- c("results_class", class(all_results))
+print.results_class <- function(l) {
+ if (length(l) == 0) {
+  cat('\n None')
+  return()
+ }
 
-spec_rf2 <- sapply(results_rf2, calcSpec) %>%
-        mean()
-```
-Sensitivitet
-============
-```{r, echo=FALSE}
-print(sens_rf2)
-```
-## Specificitet
-```{r, echo=FALSE}
-print(spec_rf2)
-```
-Logistisk regression
-===========
-```{r}
-for (i in 0:(no_splits-1)) {
-        if (i == 0) results_log <- list()
-        
-        if (i == no_splits - 1) {
-                test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
-        } else {
-                test_rows <- shuffled[1:batch_size + i*batch_size]
-        }
-        train_rows <- shuffled[!(shuffled %in% test_rows)]
-        train <- no_na_data[train_rows, ]
-        test <- no_na_data[test_rows, ]
-        cross_model <- glm(has_AE ~., family = binomial(link = logit), data = train, weights = (1 +(train$has_AE == "No")*1)) 
-        p <- predict(cross_model, newdata = test, type = "response")
-        p <- ifelse(p > 0.5, "Yes", "No")
-        results_log <- append(results_log, list(table(predicted = p, true=test$has_AE)))
+ sapply(l, USE.NAMES = TRUE, simplify = FALSE, function(vals) {
+  sapply(vals, function(v) {
+   sprintf("%.3f", v)
+  })
+ }) %>% 
+  do.call(rbind, .) %>% 
+  knitr::kable() %>% 
+  print
 }
-
-sens_log <- sapply(results_log, calcSens) %>%
-        mean()
-
-spec_log <- sapply(results_log, calcSpec) %>%
-        mean()
 ```
-Sensitivitet
-=======
-```{r, echo=FALSE}
-print(sens_log)
 
-```
-##Specificitet
-```{r, echo=FALSE}
-print(spec_log)
-
-```
-With codes
+**Random forest**
 ```{r}
-w <- left_join(master, ae_data, by = "serial_no")
-w$pos_30[is.na(w$pos_30)] <- 0
-w$pos_90[is.na(w$pos_90)] <- 0
+all_results[['Random forest crude 30']] <- getSensSpec(data_30_n, function(train, test) {
+  cross_model <- ranger(has_AE~., data = train)
+  p <- predict(cross_model, data = test )
+  rangerRoc <- data.frame(response = test$has_AE, predictor = p$predictions) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_res <- (auc(rangerRoc))
+  test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+  p$predictions <- ifelse(p$predictions< 0.5, "No", "Yes")
+  list(table(predicted = p$predictions, true=test$has_AE), auc_res)
+})
+all_results[['Random forest crude 90']] <- getSensSpec(data_90_n, function(train, test) {
+  cross_model <- ranger(has_AE~., data = train)
+  p <- predict(cross_model, data = test )
+  rangerRoc <- data.frame(response = test$has_AE, predictor = p$predictions) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_res <- (auc(rangerRoc))
+  test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+  p$predictions <- ifelse(p$predictions< 0.5, "No", "Yes")
+  list(table(predicted = p$predictions, true=test$has_AE), auc_res)
+})
+```
+
+*Adjusting weights for higher spec*
+```{r}
+all_results[['Random forest weighted 30']] <- getSensSpec(data_30_n, function(train, test) {
+  cross_model <- ranger(has_AE~., data = train, case.weights = (1 +(train$has_AE == 0)*3.7))
+  p <- predict(cross_model, data = test)
+  rangerRoc <- data.frame(response = test$has_AE, predictor = p$predictions) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_res <- (auc(rangerRoc))
+  test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+  p$predictions <- ifelse(p$predictions< 0.5, "No", "Yes")
+  list(table(predicted = p$predictions, true=test$has_AE), auc_res)
+})
+all_results[['Random forest weighted 90']] <- getSensSpec(data_90_n, function(train, test) {
+  cross_model <- ranger(has_AE~., data = train, case.weights = (1 +(train$has_AE == 0)*3.7))
+  p <- predict(cross_model, data = test)
+  rangerRoc <- data.frame(response = test$has_AE, predictor = p$predictions) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_res <- (auc(rangerRoc))
+  test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+  p$predictions <- ifelse(p$predictions< 0.5, "No", "Yes")
+  list(table(predicted = p$predictions, true=test$has_AE), auc_res)
+})
+```
+
+**Logistisk regression** 
+```{r}
+all_results[['Logistic regresssion crude 30']] <- 
+  getSensSpec(data_30_n, function(train, test) {
+    cross_model_log <- glm(has_AE ~., 
+                           family = binomial(link = logit), 
+                           data = train)
+    p <- predict(cross_model_log, newdata = test, type = "response")
+    logRoc <- data.frame(response = test$has_AE, predictor = p) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_res <- (auc(logRoc))
+  test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+    p <- ifelse(p > 0.5, "Yes", "No")
+    list(table(predicted = p, true=test$has_AE), auc_res)
+  })
+all_results[['Logistic regresssion crude 90']] <- 
+  getSensSpec(data_90_n, function(train, test) {
+    cross_model_log <- glm(has_AE ~., 
+                           family = binomial(link = logit), 
+                           data = train)
+    p <- predict(cross_model_log, newdata = test, type = "response")
+    logRoc <- data.frame(response = test$has_AE, predictor = p) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_res <- (auc(logRoc))
+  test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+    p <- ifelse(p > 0.5, "Yes", "No")
+    list(table(predicted = p, true=test$has_AE), auc_res)
+  })
+all_results[['Logistic regresssion weighted 30']] <- 
+  getSensSpec(data_30_n, function(train, test) {
+    cross_model_log <- glm(has_AE ~., 
+                           family = binomial(link = logit), 
+                           data = train, 
+                           weights = (1 +(train$has_AE == "No")*1))
+    p <- predict(cross_model_log, newdata = test, type = "response")
+    logRoc <- data.frame(response = test$has_AE, predictor = p) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_res <- (auc(logRoc))
+  test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+    p <- ifelse(p > 0.5, "Yes", "No")
+    list(table(predicted = p, true=test$has_AE), auc_res)
+  })
+all_results[['Logistic regresssion weighted 90']] <- 
+  getSensSpec(data_90_n, function(train, test) {
+    cross_model_log <- glm(has_AE ~., 
+                           family = binomial(link = logit), 
+                           data = train, 
+                           weights = (1 +(train$has_AE == "No")*1))
+    p <- predict(cross_model_log, newdata = test, type = "response")
+    logRoc <- data.frame(response = test$has_AE, predictor = p) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_res <- (auc(logRoc))
+  test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+    p <- ifelse(p > 0.5, "Yes", "No")
+    list(table(predicted = p, true=test$has_AE), auc_res)
+  })
+ ##with splines??
+all_results[['Logistic regresssion weighted - los']] <- 
+  getSensSpec(no_na_data_n, function(train, test) {
+    cross_model_log <- glm(has_AE ~., 
+                           family = binomial(link = logit), 
+                           data = train)#, 
+                          # weights = (1 +(train$has_AE == "No")*1))
+    cross_model_log %<>% update(.~.- los + ns(los, 3))
+    p <- predict(cross_model_log, newdata = test, type = "response")
+    logRoc <- data.frame(response = test$has_AE, predictor = p) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_res <- (auc(logRoc))
+  test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+  p <- ifelse(p > 0.5, "Yes", "No")
+    list(table(predicted = p, true=test$has_AE))
+  })
+```
+
+**SVM**
+```{r}
+all_results[['SVM weighted 30']] <- getSensSpec(data_30, function(train, test) {
+  cross_model <- svm(has_AE~., data = train, class.weights = c(Yes =  1, No = 2))
+  p <- predict(cross_model, newdata = test)
+  p <- ifelse(p == "Yes", 1, 0)
+  svmRoc <- data.frame(response = test$has_AE, predictor = p) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_res <- (auc(svmRoc))
+  p <- ifelse(p< 0.5, "No", "Yes")
+  list(table(predicted = p, true=test$has_AE), auc_res)
+})
+ all_results[['SVM weighted 90']] <- getSensSpec(data_90, function(train, test) {
+  cross_model <- svm(has_AE~., data = train, class.weights = c(Yes =  1, No = 2))
+  p <- predict(cross_model, newdata = test)
+  p <- ifelse(p == "Yes", 1, 0)
+  svmRoc <- data.frame(response = test$has_AE, predictor = p) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_res <- (auc(svmRoc))
+  p <- ifelse(p< 0.5, "No", "Yes")
+  list(table(predicted = p, true=test$has_AE), auc_res)
+}) 
+
 ```
 
 ```{r}
-train_data_w <- select(w, AEs, sex, age, fx, op_date, los, readmissions
-                     , type, VTID_P50, VTID_P75, VTID_P90, VTID_P95
-                     , VTID_Mean, VTID_StdDev, pos_90)
-train_data_w <- mutate(train_data_w, type = factor(type, labels=c("countypart", "county", "private", "university"))
+all_results
+
+```
+
+**With codes, creating code set**
+```{r}
+data_wc <- left_join(master, ae_data, by = "serial_no")
+data_wc$pos_30[is.na(data_wc$pos_30)] <- 0
+data_wc$pos_90[is.na(data_wc$pos_90)] <- 0
+data_wc <- na.omit(data_wc)
+data_wc$has_AE <- factor(data_wc$AEs > 0, levels = c(FALSE, TRUE), labels = c(0, 1))
+
+data_wc <- select(data_wc, age, readmissions, los, VTID_P50, VTID_P75, VTID_P90, VTID_P95
+                     , VTID_Mean, VTID_StdDev, has_AE,  sex,  fx, county
+                     , type, pos_90)
+
+```
+
+```{r}
+train_data_wc <- select(data_wc, age, readmissions, los,VTID_P50, VTID_P75, VTID_P90, VTID_P95
+                     , VTID_Mean, VTID_StdDev, pos_90, AEs, sex, fx, readmissions
+                     , type )
+train_data_wc <- mutate(train_data_wc, type = factor(type, labels=c("countypart", "central_county", "private", "university"))
                     , sex = factor(sex, labels=c("Male", "Female"))
                     , fx = factor(fx, labels=c("Yes", "No"))) 
 
-no_na_data_w <- na.omit(train_data_w)
-no_na_data_w$has_AE <- factor(no_na_data_w$AEs > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
-no_na_data_w$AEs <- NULL
-# no_na_data$has_readm <- factor(no_na_data$readmissions > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
-# no_na_data$readmissions <- NULL
+no_na_data_wc <- na.omit(train_data_wc)
+no_na_data_wc$has_AE <- factor(no_na_data_wc$AEs > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+no_na_data_wc$AEs <- NULL
 ```
 
+**Random forest with codes**
 ```{r}
-for (i in 0:(no_splits-1)) {
-        if (i == 0) results_rf2 <- list()
-        
-        if (i == no_splits - 1) {
-                test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
-        } else {
-                test_rows <- shuffled[1:batch_size + i*batch_size]
-        }
-        train_rows <- shuffled[!(shuffled %in% test_rows)]
-        train <- no_na_data_w[train_rows, ]
-        test <- no_na_data_w[test_rows, ]
-        cross_model <- ranger(has_AE~., data = train, case.weights = (1 +(train$has_AE == "No")*3.7))
-        p <- predict(cross_model, data = test)
-        results_rf2 <- append(results_rf2, list(table(predicted = p$predictions, true=test$has_AE)))
-}
+all_results[['Random forest with codes weighted']] <- 
+  getSensSpec(no_na_data_wc, function(train, test) {
+      cross_model <- ranger(has_AE~., data = train, case.weights = (1 +(train$has_AE == "No")*3.7))
+      p <- predict(cross_model, data = test)
+      list(table(predicted = p$predictions, true=test$has_AE))
+  })
+```
 
-sens_rf2 <- sapply(results_rf2, calcSens) %>%
-        mean()
-
-spec_rf2 <- sapply(results_rf2, calcSpec) %>%
-        mean()
-```
-Sensitivitet
-============
-```{r, echo=FALSE}
-print(sens_rf2)
-```
-## Specificitet
-```{r, echo=FALSE}
-print(spec_rf2)
-```
-Logistisk regression
-===========
+**Logistisk regression with codes**
 ```{r}
-for (i in 0:(no_splits-1)) {
-        if (i == 0) results_log <- list()
-        
-        if (i == no_splits - 1) {
-                test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
-        } else {
-                test_rows <- shuffled[1:batch_size + i*batch_size]
-        }
-        train_rows <- shuffled[!(shuffled %in% test_rows)]
-        train <- no_na_data_w[train_rows, ]
-        test <- no_na_data_w[test_rows, ]
-        cross_model <- glm(has_AE ~., family = binomial(link = logit), data = train, weights = (1 +(train$has_AE == "No")*1)) 
+all_results[['Logistic regression with codes weighted']] <- 
+  getSensSpec(no_na_data_wc, function(train, test) {
+        cross_model <- glm(has_AE ~.,
+                           family = binomial(link = logit),
+                           data = train,
+                           weights = (1 +(train$has_AE == "No")*1)) 
         p <- predict(cross_model, newdata = test, type = "response")
         p <- ifelse(p > 0.5, "Yes", "No")
-        results_log <- append(results_log, list(table(predicted = p, true=test$has_AE)))
+        list(table(predicted = p, true=test$has_AE))
+  })
+```
+
+preparing data for nn
+```{r}
+
+nn_data <- no_na_data_n
+
+for (i in unique(nn_data$sex)){
+  nn_data[, paste0(i)]=ifelse(nn_data$sex==i,1,0)
+}
+for (i in unique(nn_data$fx)){
+  nn_data[, paste0(i)]=ifelse(nn_data$fx==i,1,0)
+}
+for (i in unique(nn_data$type)){
+  nn_data[, paste0(i)]=ifelse(nn_data$type==i,1,0)
+}
+# for (i in unique(nn_data$cause)){
+#   nn_data[, paste0(i)]=ifelse(nn_data$cause==i,1,0)
+# }
+# for (i in unique(nn_data$county)){
+#   nn_data[, paste0(i)]=ifelse(nn_data$county==i,1,0)
+# }
+nn_data$sex <- NULL
+nn_data$type <- NULL
+nn_data$fx <- NULL
+nn_data$cause <- NULL
+nn_data$county <- NULL
+nn_data$op_date<- NULL
+
+scl <- function(x) {(x - min(x))/(max(x) - min(x))}
+nn_data[, 3:11] <- data.frame(lapply(nn_data[,3:11], scl))
+nn_data_30 <- select(nn_data, -rrr_90, has_AE = rrr_30)
+nn_data_90 <- select(nn_data, -rrr_30, has_AE = rrr_90)
+```
+
+NN with tensor flow
+```{r}
+test <- sample(nrow(nn_data_90), size = round(nrow(nn_data)/10))
+train <- which(!1:nrow(nn_data) %in% test)
+
+getSplit <- function(ds, rows) {
+  outcome <- ds$has_AE
+  outcome <- to_categorical(outcome, 2)
+
+  list(
+    outcome = outcome[rows,],
+    data = ds[rows,] %>% select(-has_AE) %>% as.matrix()
+  )
 }
 
-sens_log <- sapply(results_log, calcSens) %>%
-        mean()
+test_data <- getSplit(nn_data_90, test)
+train_data <- getSplit(nn_data_90, train)
 
-spec_log <- sapply(results_log, calcSpec) %>%
-        mean()
-```
-Sensitivitet
-=======
-```{r, echo=FALSE}
-print(sens_log)
+model <- keras_model_sequential() %>% 
+  layer_dense(units = 49, activation = 'relu', input_shape = ncol(test_data$data)) %>% 
+  layer_dropout(rate = 0.4) %>% 
+  layer_dense(units = 200, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 180, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 160, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 140, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 120, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 100, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 100, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 80, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 60, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 2, activation = 'softmax')
 
-```
-##Specificitet
-```{r, echo=FALSE}
-print(spec_log)
+model %>% compile(
+  loss = 'binary_crossentropy',
+  optimizer = optimizer_rmsprop(lr = 0.001),
+  metrics = c('accuracy'))
 
+history <- model %>% fit(
+  train_data$data, train_data$outcome, 
+  epochs = 250, batch_size = 128, 
+  validation_split = 0.2)
+
+model %>% evaluate(test_data$data, test_data$outcome, batch_size = 32)
+
+pred <- model %>% predict(test_data$data, batch_size = 32)
+
+#pred
+x <- apply(pred, 1, function(v) which.max(v)) %>% factor(labels=c("No", "Yes"))
+y <- apply(pred, 1, function(v) which.max(v))
+
+y <- ifelse(y==2, 1, 0)
+
+nnRoc <- data.frame(response = nn_data_90[test, "has_AE"], predictor = y) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_nn <- (auc(nnRoc))
+
+res_tbl <- table(true = nn_data_30[test, "has_AE"], test = y)
+sens <- res_tbl['1', '1']/(res_tbl['1', '1']+res_tbl['1', '0'])
+spec <- res_tbl['0', '0']/(res_tbl['0', '0']+res_tbl['0', '1'])
+print(paste("sens = ", sens))
+print(paste("spec = ", spec))
+print(paste("AUC = ", auc_nn))
 ```
+10000 epochs
+$acc
+[1] 0.6212121
+200$acc
+[1] 0.7045455
+
+100e
+$acc
+[1] 0.6893939
+
+[1] 0.7710843
+[1] 0.5510204
+
+**Neurala networks with and without codes**
+```{r}
+nn_data <- no_na_data_wc %>%
+        select(has_AE, sex, fx, type, pos_90, age, los, readmissions, op_date, VTID_Mean, VTID_P50, VTID_P75, VTID_P90, VTID_P95, VTID_StdDev)
+nn_data$has_AE <- ifelse(nn_data$has_AE == "Yes", 1, 0)
+nn_data$fx <- ifelse(nn_data$fx == "Yes", 1, 0)
+nn_data$sex <- ifelse(nn_data$sex == "Female", 0, 1)
+nn_data$type <- ifelse(nn_data$type == "university", 1, ifelse(nn_data$type == "county", 2, ifelse(nn_data$type == "countypart", 3, 0)))
+scl <- function(x) {(x - min(x))/(max(x) - min(x))}
+nn_data[, 6:ncol(nn_data)] <- data.frame(lapply(nn_data[,6:ncol(nn_data)], scl))
+no_splits <- 10
+
+all_results[['Neural network without codes crude']] <- 
+  getSensSpec(nn_data, function(train, test) {
+        n <- names(train)
+        f <- as.formula(paste("has_AE ~", paste(n[!n %in% "has_AE"], collapse = " + ")))
+        cross_model <- neuralnet(f, 
+                                 data = train, 
+                                 hidden = c(5, 3), 
+                                 act.fct = "logistic", 
+                                 linear.output = FALSE, 
+                                 lifesign = "minimal",
+                                 stepmax = (8 * 1e6))
+        p <- compute(cross_model, test[, -1])
+        p1 <- p$net.result
+        fpred <- ifelse(p1>0.5, 'Yes', 'No')
+        fkey <- factor(test$has_AE, levels = c(0, 1), labels=c('No', 'Yes'))
+        ret <- table(predicted = fpred, true=fkey)
+        list(ret)
+  })
+```
+Test without cross-validation
+```{r}
+rf <- randomForest(has_AE~., data = no_na_data)
+rf_tbl <- table(predicted = predict(rf), true=no_na_data$has_AE)
+
+log <- glm(has_AE ~., data = no_na_data, family = binomial(link = logit))
+log_p <- predict(log, newdata = no_na_data, type = "response")
+log_p <- ifelse(log_p > 0.5, "Yes", "No")
+log_tbl <- table(predicted = log_p, true=no_na_data$has_AE)
+
+all_results[['RF-without x-validation']] <- c(calcSens(rf_tbl), calcSpec(rf_tbl))
+all_results[['Log-without x-validation']] <- c(calcSens(log_tbl), calcSpec(log_tbl))
+```
+
+|                                        |sens  |spec  |
+|:---------------------------------------|:-----|:-----|
+|Logistic regresssion weighted           |0.431 |0.817 |
+|Logistic regresssion weighted - los     |0.423 |0.819 |
+|Neural networ without codes crude       |0.759 |0.537 |
+|Random forest crude                     |0.753 |0.456 |
+|Random forest weighted                  |0.397 |0.800 |
+|SVM weighted                            |0.420 |0.808 |
+|Random forest with codes weighted       |0.452 |0.836 |
+|Logistic regression with codes weighted |0.510 |0.808 |
+
+
+42
