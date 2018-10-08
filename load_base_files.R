@@ -20,6 +20,15 @@ ac <- read.delim(file=fn,
                  encoding=encoding_type, 
                  stringsAsFactors=FALSE)
 
+fn <- file.path(base_location, "aeindexvtfstudiepop.txt")
+index <- read.delim(file=fn, 
+                    header=TRUE, 
+                    encoding=encoding_type, 
+                    stringsAsFactors=FALSE) %>%
+  select(pnr = Personnummer,  age = Ålder.vid.utskrivning) %>%
+  distinct(pnr, .keep_all = T)
+
+
 fn <- file.path(base_location, "aestudiepop_patientreg.txt")
 sp <- read.delim(file=fn, 
                  header=TRUE, 
@@ -68,13 +77,15 @@ ac <- ac %>% select(pnr = Personnummer
                     , fx = Fraktur
                     , readm_group = Återinläggningsgrupp
                     , los_group = Vårdtidsindelningsgrupp
-                    , sex = Kön) 
+                    , sex = Kön
+                    , cause = SHPR.Diagnos
+                    , op_code = Operationer) 
 keys <- keys %>%
         select(serial_no, pnr) %>%
         filter(serial_no != "12463", serial_no != "10652") #excluding 2 cases
 
 ac <- left_join(keys, ac, by = "pnr")
-
+ac <- left_join(ac, index, by = "pnr")
 sp_total <- sp %>%
         bind_rows(sp_12) %>%
         arrange ( pnr) %>% 
@@ -83,8 +94,8 @@ sp_total <- sp %>%
                , adm_date = adm_date.x
                , op_date
                , disc_date = disc_date.x
-               ,icd_main
-               ,icd_code
+               , icd_main
+               , icd_code
                , ward
         ) 
 sp_total <- left_join(keys, sp_total, by = "pnr")       
