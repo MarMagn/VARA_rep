@@ -1,0 +1,58 @@
+---
+title: "Table1 AE"
+output: html_document
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Creating table1
+```{r}
+library(Gmisc)
+library(htmlTable)
+source("Index frame.R")
+index$hospital_type <- factor(index$hospital_type, levels= c("University", "County", "Rural", "Private"))
+index <- mutate(index, Female = if_else(sex == "Female", 1, 0)) %>%
+  mutate(Male = if_else(sex == "Male", 1, 0))
+index$Female <- factor(index$Female, levels = c(1, 0))
+index$Male <- factor(index$Male, levels = c(1, 0))
+index$dummy <- 1
+getDescriptionStatsBy(index$age, index$dummy)
+
+index$fx <- factor(index$fx, labels=c("Acute", "Elective"))
+
+
+getTable1Stats <- function(x, digits = 0, ...){
+  getDescriptionStatsBy(x = x, 
+                        by = index$fx,
+                        digits = digits,
+                        continuous_fn = describeMedian,
+                        header_count = TRUE,
+                        add_total_col = TRUE,
+                        ...)
+  
+}
+
+
+t1 <- list()
+t1[["Female n="]] <-
+  getTable1Stats(index$Female)
+ 
+t1[["Male n="]] <-
+  getTable1Stats(index$Male)
+t1[["Age, median&dagger;"]] <-
+  getTable1Stats(index$age)
+ 
+t1[["LOS, median&dagger;"]] <-
+  getTable1Stats(index$los)
+
+t1[["Type of Hospital n="]] <- 
+  getTable1Stats(index$hospital_type)
+
+mergeDesc(t1,
+          htmlTable_args = list(css.rgroup = "",
+                                caption  = "Table 1, demographics",
+                               tfoot = "&dagger; Interquartile range" ))
+
+x <- getTable1Stats(index$los)
+```

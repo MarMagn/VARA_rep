@@ -1,0 +1,959 @@
+---
+title: "VARA_AE_anlysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+source("load_base_files.R")
+source("Index frame.R")
+
+
+createGroups <- function(df) {
+        df <- mutate(df, group = (if_else(readm_group == "Åter inom  2-30 dar  med AE", 1
+                                , if_else(readm_group == "Åter inom  2-30 dar utan AE", 2
+                                , if_else(readm_group == "Åter inom 31-90 dar  med AE", 3
+                                , if_else(readm_group == "Åter inom 31-90 dar utan AE", 4
+                                , if_else(los_group == " 0- 55  med AE", 5
+                                , if_else(los_group == " 0- 55 utan AE", 6
+                                , if_else(los_group == "56- 80  med AE", 7
+                                , if_else(los_group == "56- 80 utan AE", 8
+                                , if_else(los_group == "81-100  med AE", 9
+                                , 10))))))))))) 
+}
+index <- groupHosp(index) 
+index <- createGroups(index)
+```
+
+```{r}
+sp_prim <- sp_total %>%
+        mutate(days = op_date - adm_date, days2 = disc_date - op_date) %>% 
+        filter(days >= 0, days2 > 0) #Selecting primary admissions
+dead_index <- left_join(sp_prim, mort, by = "serial_no")
+dead_index <- dead_index %>%
+        mutate(index_dead = if_else(death_date == disc_date, 1, 0)) %>%
+        mutate(dead_30 = if_else(death_date - op_date <= 30 & index_dead == 0, 1, 0)) %>%
+        mutate(dead_90 = if_else(death_date - op_date <= 90 & index_dead == 0, 1, 0)) %>%
+        select(serial_no, index_dead, dead_30, dead_90) %>%
+        distinct(serial_no, .keep_all = T)
+
+ae_data <- sp_total %>% #selecting admissions with pos codes
+        mutate(ae = if_else(grepl(paste(codes_main, collapse= "|"), icd_main) 
+                            | grepl(paste(codes_all, collapse= "|"), icd_main)
+                            | grepl(paste(codes_all, collapse= "|"), icd_code),1,0)) %>%
+        #mutate(days = adm_date - op_date) %>%
+        filter(adm_date - op_date < 90 & disc_date >= op_date) %>%
+        mutate(index_ae = if_else(ae == 1 & op_date >= adm_date & disc_date > op_date, 1, 0)) %>%
+        mutate(re_30_ae = if_else(ae == 1 & index_ae == 0 & adm_date - op_date <= 30 & adm_date > op_date, 1, 0)) %>%
+        mutate(re_90_ae = if_else(ae == 1 & index_ae == 0 & adm_date - op_date <= 90 & adm_date > op_date, 1, 0)) %>%
+        filter(ae == 1) 
+oc_index <- filter(ae_data, index_ae == 1) %>%
+        distinct(serial_no, .keep_all = T) %>%
+        mutate(index_ae = 1) %>%
+        select(serial_no, index_ae)
+
+re_30 <- filter(ae_data, re_30_ae == 1) %>%
+        distinct(serial_no, .keep_all = T) %>%
+        mutate(ae_30 = 1) %>%
+        select(serial_no, ae_30)
+
+re_90 <- filter(ae_data, re_90_ae == 1) %>%
+        distinct(serial_no, .keep_all = T) %>%
+        mutate(ae_90 = 1) %>%
+        select(serial_no, ae_90)
+ae_data <- left_join(index, oc_index, by = "serial_no") %>%
+        left_join(re_30, by = "serial_no") %>%
+        left_join(re_90, by = "serial_no") %>%
+        left_join(dead_index, by = "serial_no")
+ae_data$index_ae[is.na(ae_data$index_ae)] <- 0
+ae_data$ae_30[is.na(ae_data$ae_30)] <- 0
+ae_data$ae_90[is.na(ae_data$ae_90)] <- 0
+ae_data$index_dead[is.na(ae_data$index_dead)] <- 0
+ae_data$dead_30[is.na(ae_data$dead_30)] <- 0
+ae_data$dead_90[is.na(ae_data$dead_90)] <- 0
+
+ae_data <- ae_data %>%       
+        mutate(pos_30 = if_else(ae_30 == 1 | dead_30 == 1, 1, 0)) %>%
+        mutate(pos_90 = if_else(ae_90 == 1 | dead_90 == 1, 1, 0)) 
+rm(fn, codes_all, codes_main, sp_total, dead, mort, sp_prim, dead_index, re_30, re_90)
+```
+Adding AEs from RRR
+```{r}
+fn <- file.path(base_location, "ae_data.csv")
+rrr_data <- read.csv(file=fn, encoding=encoding_type)
+
+rrr_data$event_date <- as.Date(rrr_data$event_date)
+
+aes <- rrr_data %>%
+        filter( causality > 2 ) %>%
+        left_join(index, by = "serial_no") 
+
+aes <- aes %>%
+        mutate(days = event_date - op_date) %>%
+        mutate(rrr_i = if_else(op_date >= adm_date & disc_date > op_date & adm_date <= event_date & event_date <= disc_date , 1, 0)) %>%
+        mutate(rrr_30 = if_else(rrr_i == 0 & event_date - op_date <= 30 , 1, 0)) %>%
+        mutate(rrr_90 = if_else(rrr_i == 0 & event_date - op_date <= 90 , 1, 0)) 
+aes_prev <- filter(aes, avoidability > 2)
+aes_serious <- filter(aes_prev, NCCMERP > 5)
+
+aes_sel <- filter(aes, inj_type == "Blåsöverfyllnad" |inj_type == "Hudskada eller ytlig kärlskada - Tromboflebit" | inj_type == "Infektion - Hud, mjukdelar" | inj_type == "Infektion - Leder, skelett" | inj_type == "Infektion - Lunga, lungsäck" | inj_type == "Kirurgisk skada - Per-/postoperativ blödning/hematom (som ej krävt reoperation)" | inj_type == "Kirurgisk skada - Reoperation - Blödning" | inj_type == "Kirurgisk skada - Reoperation - Luxation" | inj_type == "Stroke - Blödning" | inj_type == "Svikt i vitala parametrar - Andningstopp" | inj_type == "Svikt i vitala parametrar - Hjärtpåverkan" | inj_type == "Svikt i vitala parametrar - Hjärtstopp" | inj_type == "Trombos/emboli - Hjärna" | inj_type == "Trombos/emboli - Hjärta" | inj_type == "Trombos/emboli - Lunga" | inj_type == "Trycksår - Kategori 1" | inj_type == "Trycksår - Kategori 2" | inj_type == "Trycksår - Kategori 3" | inj_type == "Trycksår - Kategori 4"| inj_type == "Trycksår - Kategori okänd")
+all <- distinct(aes, serial_no, .keep_all = T)
+prev <- distinct(aes_prev, serial_no, .keep_all = T)
+ser <- distinct(aes_serious, serial_no, .keep_all = T)
+sel <- distinct(aes_sel, serial_no, .keep_all = T)
+
+
+transformDF <- function(df) {
+        df1 <- df %>%
+                filter(rrr_i == 1) %>%
+                distinct(serial_no, .keep_all = T) %>%
+                select(serial_no, rrr_i)
+        
+        df2 <- df %>%
+                filter(rrr_30 == 1) %>%
+                distinct(serial_no, .keep_all = T) %>%
+                select(serial_no, rrr_30)
+        
+        df3 <- df %>%
+                filter(rrr_90 == 1) %>%
+                distinct(serial_no, .keep_all = T) %>%
+                select(serial_no, rrr_90)
+        
+        df <- left_join(ac, df1, by = "serial_no") %>%
+                left_join(df2, by = "serial_no") %>%
+                left_join(df3, by = "serial_no") %>%
+                mutate(rrr_both_30 = if_else(rrr_i == 1 | rrr_30 == 1, 1, 0)) %>%
+                mutate(rrr_both_90 = if_else(rrr_i == 1 | rrr_90 == 1, 1, 0)) %>%
+                select(serial_no, rrr_i, rrr_30, rrr_90, rrr_both_30, rrr_both_90)
+}
+
+aes <- transformDF(aes)
+aes_prev <- transformDF(aes_prev)
+aes_ser <- transformDF(aes_serious)
+aes_sel <- transformDF(aes_sel)
+
+aes[is.na(aes)] <- 0
+aes_prev[is.na(aes_prev)] <- 0
+aes_ser[is.na(aes_ser)] <- 0
+aes_sel[is.na(aes_sel)] <- 0
+
+AE_frame <- left_join(ae_data, aes, by = "serial_no")
+AE_frame_prev <- left_join(ae_data, aes_prev, by = "serial_no")
+AE_frame_ser <- left_join(ae_data, aes_ser, by = "serial_no")
+AE_frame_sel <- left_join(ae_data, aes_sel, by = "serial_no")
+```
+
+```{r}
+catFun <- function(df) {
+        df <- mutate(df, cat_30_std = (if_else(rrr_both_30 == 1 & pos_30 == 1, "TP"
+                                     , if_else(rrr_both_30 == 0 & pos_30 == 0, "TN"
+                                     , if_else(rrr_both_30 == 1 & pos_30 == 0, "FN","FP")))))
+
+        df<- mutate(df, cat_90_std = (if_else(rrr_both_90 == 1 & pos_90 == 1, "TP"
+                                    , if_else(rrr_both_90 == 0 & pos_90 == 0, "TN"
+                                    , if_else(rrr_both_90 == 1 & pos_90 == 0, "FN","FP")))))
+
+        df <- mutate(df, cat_30_re = (if_else(rrr_30 == 1 & pos_30 == 1, "TP"
+                                    , if_else(rrr_30 == 0 & pos_30 == 0, "TN"
+                                    , if_else(rrr_90 == 1 & pos_90 == 0, "FN","FP")))))
+        df <- mutate(df, cat_90_re = (if_else(rrr_90 == 1 & pos_90 == 1, "TP"
+                                    , if_else(rrr_90 == 0 & pos_90 == 0, "TN"
+                                    , if_else(rrr_90 == 1 & pos_90 == 0, "FN","FP")))))
+}
+
+AE_frame <- catFun(AE_frame)        
+AE_frame_prev <- catFun(AE_frame_prev) 
+AE_frame_ser <- catFun(AE_frame_ser)
+AE_frame_sel <- catFun(AE_frame_sel)
+
+```
+Calculating sens/spec
+```{r}
+calcAdjusted <- function(df, type) {
+        aeDf <- table(df$group, df[[type]])
+        as.data.frame.matrix(aeDf) %>%
+                mutate(pop = c(630, 631, 403, 666, 289, 12628, 206, 3237, 537, 2547)/21774
+                       , sens = TP /(TP + FN)
+                       , adj_sens = (TP /(TP + FN) * pop)
+                       , adj_spec = (TN / (TN + FP) * pop))
+}
+x <- calcAdjusted(AE_frame, "cat_30_std")
+y <- calcAdjusted(AE_frame, "cat_30_re")
+getAdjustedSensitivity <- function(df, d = 1:nrow(df), type) {
+        if (missing(type)) stop("Type required")
+        adjDf <- calcAdjusted(df[d, ], type=type)
+        sum(adjDf$adj_sens, na.rm = T)
+}
+getAdjustedSpecificity <- function(df, d = 1:nrow(df), type) {
+        if (missing(type)) stop("Type required")
+        adjDf <- calcAdjusted(df[d, ], type=type)
+        sum(adjDf$adj_spec, na.rm = T)
+}
+```
+sens/spec fractures
+```{r}
+fractures <- filter(AE_frame, fx == "Yes")
+elective <- filter(AE_frame, fx == "No")
+fractures_prev <- filter(AE_frame_prev, fx == "Yes")
+elective_prev <- filter(AE_frame_prev, fx == "No")
+fractures_ser <- filter(AE_frame_ser, fx == "Yes")
+elective_ser <- filter(AE_frame_ser, fx == "No")
+fractures_sel <- filter(AE_frame_sel, fx == "Yes")
+elective_sel <- filter(AE_frame_sel, fx == "No")
+
+calcAdjusted_fx <- function(df, type) {
+        aeDf <- table(df$group, df[[type]])
+        as.data.frame.matrix(aeDf) %>%
+                mutate(pop = c(274, 294, 199, 341, 194, 2859, 148, 1167, 302, 766)/6544
+                       , adj_sens = (TP /(TP + FN) * pop)
+                       , adj_spec = (TN / (TN + FP) * pop))
+}
+getAdjustedSensitivity_fx <- function(df, d = 1:nrow(df), type) {
+        if (missing(type)) stop("Type required")
+        adjDf <- calcAdjusted_fx(df[d, ], type=type)
+        sum(adjDf$adj_sens, na.rm = T)
+}
+getAdjustedSpecificity_fx <- function(df, d = 1:nrow(df), type) {
+        if (missing(type)) stop("Type required")
+        adjDf <- calcAdjusted_fx(df[d, ], type=type)
+        sum(adjDf$adj_spec, na.rm = T)
+}
+```
+sens/spec elective
+```{r}
+calcAdjusted_elective <- function(df, type) {
+        aeDf <- table(df$group, df[[type]])
+        as.data.frame.matrix(aeDf) %>%
+                mutate(pop = c(356, 337, 204, 325, 95, 9769, 58, 2070, 235, 1781)/15230
+                       , adj_sens = (TP /(TP + FN) * pop)
+                       , adj_spec = (TN / (TN + FP) * pop))
+}
+getAdjustedSensitivity_elective <- function(df, d = 1:nrow(df), type) {
+        if (missing(type)) stop("Type required")
+        adjDf <- calcAdjusted_elective(df[d, ], type=type)
+        sum(adjDf$adj_sens, na.rm = T)
+}
+getAdjustedSpecificity_elective <- function(df, d = 1:nrow(df), type) {
+        if (missing(type)) stop("Type required")
+        adjDf <- calcAdjusted_elective(df[d, ], type=type)
+        sum(adjDf$adj_spec, na.rm = T)
+}
+```
+Botstrapping all, prev, major, selected total
+```{r}
+boot_sens_30_all_std <- boot(AE_frame, statistic = getAdjustedSensitivity, R = 2000, type = "cat_30_std")  
+boot_sens_90_all_std <- boot(AE_frame, statistic = getAdjustedSensitivity, R = 2000, type = "cat_90_std")
+boot_spec_30_all_std <- boot(AE_frame, statistic = getAdjustedSpecificity, R = 2000, type = "cat_30_std")  
+boot_spec_90_all_std <- boot(AE_frame, statistic = getAdjustedSpecificity, R = 2000, type = "cat_90_std")
+
+boot_sens_30_all_re <- boot(AE_frame, statistic = getAdjustedSensitivity, R = 2000, type = "cat_30_re")
+boot_sens_90_all_re <- boot(AE_frame, statistic = getAdjustedSensitivity, R = 2000, type = "cat_90_re")
+boot_spec_30_all_re <- boot(AE_frame, statistic = getAdjustedSpecificity, R = 2000, type = "cat_30_re")
+boot_spec_90_all_re <- boot(AE_frame, statistic = getAdjustedSpecificity, R = 2000, type = "cat_90_re")
+#prev
+boot_sens_30_prev_std <- boot(AE_frame_prev, statistic = getAdjustedSensitivity, R = 2000, type = "cat_30_std")  
+boot_sens_90_prev_std <- boot(AE_frame_prev, statistic = getAdjustedSensitivity, R = 2000, type = "cat_90_std")
+boot_spec_30_prev_std <- boot(AE_frame_prev, statistic = getAdjustedSpecificity, R = 2000, type = "cat_30_std")  
+boot_spec_90_prev_std <- boot(AE_frame_prev, statistic = getAdjustedSpecificity, R = 2000, type = "cat_90_std")
+
+boot_sens_30_prev_re <- boot(AE_frame_prev, statistic = getAdjustedSensitivity, R = 2000, type = "cat_30_re")
+boot_sens_90_prev_re <- boot(AE_frame_prev, statistic = getAdjustedSensitivity, R = 2000, type = "cat_90_re")
+boot_spec_30_prev_re <- boot(AE_frame_prev, statistic = getAdjustedSpecificity, R = 2000, type = "cat_30_re")
+boot_spec_90_prev_re <- boot(AE_frame_prev, statistic = getAdjustedSpecificity, R = 2000, type = "cat_90_re")
+#major
+boot_sens_30_ser_std <- boot(AE_frame_ser, statistic = getAdjustedSensitivity, R = 2000, type = "cat_30_std")  
+boot_sens_90_ser_std <- boot(AE_frame_ser, statistic = getAdjustedSensitivity, R = 2000, type = "cat_90_std")
+boot_spec_30_ser_std <- boot(AE_frame_ser, statistic = getAdjustedSpecificity, R = 2000, type = "cat_30_std")  
+boot_spec_90_ser_std <- boot(AE_frame_ser, statistic = getAdjustedSpecificity, R = 2000, type = "cat_90_std")
+
+boot_sens_30_ser_re <- boot(AE_frame_ser, statistic = getAdjustedSensitivity, R = 2000, type = "cat_30_re")
+boot_sens_90_ser_re <- boot(AE_frame_ser, statistic = getAdjustedSensitivity, R = 2000, type = "cat_90_re")
+boot_spec_30_ser_re <- boot(AE_frame_ser, statistic = getAdjustedSpecificity, R = 2000, type = "cat_30_re")
+boot_spec_90_ser_re <- boot(AE_frame_ser, statistic = getAdjustedSpecificity, R = 2000, type = "cat_90_re")
+#selected
+boot_sens_30_sel_std <- boot(AE_frame_sel, statistic = getAdjustedSensitivity, R = 2000, type = "cat_30_std")  
+boot_sens_90_sel_std <- boot(AE_frame_sel, statistic = getAdjustedSensitivity, R = 2000, type = "cat_90_std")
+boot_spec_30_sel_std <- boot(AE_frame_sel, statistic = getAdjustedSpecificity, R = 2000, type = "cat_30_std")  
+boot_spec_90_sel_std <- boot(AE_frame_sel, statistic = getAdjustedSpecificity, R = 2000, type = "cat_90_std")
+
+boot_sens_30_sel_re <- boot(AE_frame_sel, statistic = getAdjustedSensitivity, R = 2000, type = "cat_30_re")
+boot_sens_90_sel_re <- boot(AE_frame_sel, statistic = getAdjustedSensitivity, R = 2000, type = "cat_90_re")
+boot_spec_30_sel_re <- boot(AE_frame_sel, statistic = getAdjustedSpecificity, R = 2000, type = "cat_30_re")
+boot_spec_90_sel_re <- boot(AE_frame_sel, statistic = getAdjustedSpecificity, R = 2000, type = "cat_90_re")
+```
+Botstrapping for fractures
+```{r}
+#All
+boot_sens_fx_30_all_std <- boot(fractures, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_30_std") 
+boot_sens_fx_90_all_std <- boot(fractures, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_90_std")
+boot_spec_fx_30_all_std <- boot(fractures, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_30_std")
+boot_spec_fx_90_all_std <- boot(fractures, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_90_std")
+
+boot_sens_fx_30_all_re <- boot(fractures, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_30_re")
+boot_sens_fx_90_all_re <- boot(fractures, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_90_re")
+boot_spec_fx_30_all_re <- boot(fractures, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_30_re")
+boot_spec_fx_90_all_re <- boot(fractures, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_90_re")
+#prev
+boot_sens_fx_30_prev_std <- boot(fractures_prev, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_30_std") 
+boot_sens_fx_90_prev_std <- boot(fractures_prev, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_90_std")
+boot_spec_fx_30_prev_std <- boot(fractures_prev, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_30_std")
+boot_spec_fx_90_prev_std <- boot(fractures_prev, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_90_std")
+
+boot_sens_fx_30_prev_re <- boot(fractures_prev, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_30_re")
+boot_sens_fx_90_prev_re <- boot(fractures_prev, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_90_re")
+boot_spec_fx_30_prev_re <- boot(fractures_prev, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_30_re")
+boot_spec_fx_90_prev_re <- boot(fractures_prev, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_90_re")
+
+#Major
+boot_sens_fx_30_ser_std <- boot(fractures_ser, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_30_std")
+boot_sens_fx_90_ser_std <- boot(fractures_ser, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_90_std")
+boot_spec_fx_30_ser_std <- boot(fractures_ser, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_30_std")
+boot_spec_fx_90_ser_std <- boot(fractures_ser, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_90_std")
+
+boot_sens_fx_30_ser_re <- boot(fractures_ser, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_30_re")
+boot_sens_fx_90_ser_re <- boot(fractures_ser, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_90_re")
+boot_spec_fx_30_ser_re <- boot(fractures_ser, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_30_re")
+boot_spec_fx_90_ser_re <- boot(fractures_ser, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_90_re")
+
+#selected
+boot_sens_fx_30_sel_std <- boot(fractures_sel, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_30_std")
+boot_sens_fx_90_sel_std <- boot(fractures_sel, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_90_std")
+boot_spec_fx_30_sel_std <- boot(fractures_sel, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_30_std")
+boot_spec_fx_90_sel_std <- boot(fractures_sel, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_90_std")
+
+boot_sens_fx_30_sel_re <- boot(fractures_sel, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_30_re")
+boot_sens_fx_90_sel_re <- boot(fractures_sel, statistic = getAdjustedSensitivity_fx, R = 2000, type = "cat_90_re")
+boot_spec_fx_30_sel_re <- boot(fractures_sel, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_30_re")
+boot_spec_fx_90_sel_re <- boot(fractures_sel, statistic = getAdjustedSpecificity_fx, R = 2000, type = "cat_90_re")
+```
+Bootstrapping for elective
+```{r}
+#All
+boot_sens_elective_30_all_std <- boot(elective, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_30_std")
+boot_sens_elective_90_all_std <- boot(elective, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_90_std")
+boot_spec_elective_30_all_std <- boot(elective, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_30_std")
+boot_spec_elective_90_all_std <- boot(elective, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_90_std")
+boot_sens_elective_30_all_re <- boot(elective, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_30_re")
+boot_sens_elective_90_all_re <- boot(elective, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_90_re")
+boot_spec_elective_30_all_re <- boot(elective, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_30_re")
+boot_spec_elective_90_all_re <- boot(elective, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_90_re")
+#prev
+boot_sens_elective_30_prev_std <- boot(elective_ser, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_30_std") 
+boot_sens_elective_90_prev_std <- boot(elective_ser, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_90_std")
+boot_spec_elective_30_prev_std <- boot(elective_ser, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_30_std")
+boot_spec_elective_90_prev_std <- boot(elective_ser, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_90_std")
+
+boot_sens_elective_30_prev_re <- boot(elective_prev, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_30_re")
+boot_sens_elective_90_prev_re <- boot(elective_prev, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_90_re")
+boot_spec_elective_30_prev_re <- boot(elective_prev, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_30_re")
+boot_spec_elective_90_prev_re <- boot(elective_prev, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_90_re")
+#ser
+boot_sens_elective_30_ser_std <- boot(elective_ser, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_30_std")
+boot_sens_elective_90_ser_std <- boot(elective_ser, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_90_std")
+boot_spec_elective_30_ser_std <- boot(elective_ser, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_30_std")
+boot_spec_elective_90_ser_std <- boot(elective_ser, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_90_std")
+
+boot_sens_elective_30_ser_re <- boot(elective_ser, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_30_re")
+boot_sens_elective_90_ser_re <- boot(elective_ser, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_90_re")
+boot_spec_elective_30_ser_re <- boot(elective_ser, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_30_re")
+boot_spec_elective_90_ser_re <- boot(elective_ser, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_90_re")
+
+#selected
+boot_sens_elective_30_sel_std <- boot(elective_sel, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_30_std")
+boot_sens_elective_90_sel_std <- boot(elective_sel, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_90_std")
+boot_spec_elective_30_sel_std <- boot(elective_sel, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_30_std")
+boot_spec_elective_90_sel_std <- boot(elective_sel, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_90_std")
+
+boot_sens_elective_30_sel_re <- boot(elective_sel, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_30_re")
+boot_sens_elective_90_sel_re <- boot(elective_sel, statistic = getAdjustedSensitivity_elective, R = 2000, type = "cat_90_re")
+boot_spec_elective_30_sel_re <- boot(elective_sel, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_30_re")
+boot_spec_elective_90_sel_re <- boot(elective_sel, statistic = getAdjustedSpecificity_elective, R = 2000, type = "cat_90_re")
+```
+Putting it altogether in list total
+```{r}
+sens_spec_results <-list()
+
+#All
+sens_spec_results[['30 total all standard']] <- paste0(round(getAdjustedSensitivity(AE_frame, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_30_all_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_30_all_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_30_all_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_30_all_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 total all standard']] <- paste0(round(getAdjustedSensitivity(AE_frame, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_90_all_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_90_all_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_90_all_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_90_all_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['30 total all readmission']] <- paste0(round(getAdjustedSensitivity(AE_frame, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_30_all_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_30_all_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_30_all_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_30_all_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 total all readmission']] <- paste0(round(getAdjustedSensitivity(AE_frame, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_90_all_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_90_all_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_90_all_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_90_all_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+##prev
+sens_spec_results[['30 total preventable standard']] <- paste0(round(getAdjustedSensitivity(AE_frame_prev, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_30_prev_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_30_prev_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame_prev, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_30_prev_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_30_prev_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 total preventable standard']] <- paste0(round(getAdjustedSensitivity(AE_frame_prev, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_90_prev_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_90_prev_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame_prev, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_90_prev_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_90_prev_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['30 total preventable readmission']] <- paste0(round(getAdjustedSensitivity(AE_frame_prev, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_30_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_30_prev_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame_prev, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_30_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_30_prev_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 total preventable readmission']] <- paste0(round(getAdjustedSensitivity(AE_frame_prev, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_90_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_90_prev_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame_prev, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_90_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_90_prev_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+##major
+sens_spec_results[['30 total major standard']] <- paste0(round(getAdjustedSensitivity(AE_frame_ser, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_30_ser_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_30_ser_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame_ser, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_30_ser_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_30_ser_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 total major standard']] <- paste0(round(getAdjustedSensitivity(AE_frame_ser, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_90_ser_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_90_ser_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame_ser, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_90_ser_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_90_ser_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['30 total major readmission']] <- paste0(round(getAdjustedSensitivity(AE_frame_ser, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_30_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_30_prev_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame_prev, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_30_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_30_prev_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 total major readmission']] <- paste0(round(getAdjustedSensitivity(AE_frame_ser, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_90_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_90_prev_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame_prev, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_90_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_90_prev_re, type = "perc")[[4]][5]*100, digits = 1),")")
+sens_spec_results
+
+#Selected
+sens_spec_results[['30 total Selected standard']] <- paste0(round(getAdjustedSensitivity(AE_frame_sel, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_30_sel_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_30_sel_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame_sel, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_30_sel_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_30_sel_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 total Selected standard']] <- paste0(round(getAdjustedSensitivity(AE_frame_sel, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_90_sel_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_90_sel_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame_sel, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_90_sel_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_90_sel_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['30 total Selected readmission']] <- paste0(round(getAdjustedSensitivity(AE_frame_sel, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_30_sel_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_30_sel_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame_sel, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_30_sel_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_30_sel_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 total Selected readmission']] <- paste0(round(getAdjustedSensitivity(AE_frame_sel, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_90_sel_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_90_sel_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity(AE_frame_sel, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_90_sel_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_90_sel_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+```
+fractures
+```{r, echo=FALSE}
+#All fractures
+sens_spec_results[['30 fracture all standard']] <- paste0(round(getAdjustedSensitivity_fx(fractures, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_30_all_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_30_all_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_30_all_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_30_all_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 fracture all standard']] <- paste0(round(getAdjustedSensitivity_fx(fractures, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_90_all_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_90_all_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_90_all_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_90_all_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['30 fracture all readmission']] <- paste0(round(getAdjustedSensitivity_fx(fractures, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_30_all_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_30_all_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_30_all_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_30_all_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 fracture all readmission']] <- paste0(round(getAdjustedSensitivity_fx(fractures, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_90_all_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_90_all_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_90_all_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_90_all_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+#prev fracture
+sens_spec_results[['30 fracture preventable standard']] <- paste0(round(getAdjustedSensitivity_fx(fractures_prev, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_30_prev_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_30_prev_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures_prev, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_30_prev_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_30_prev_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 fracture preventable standard']] <- paste0(round(getAdjustedSensitivity_fx(fractures_prev, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_90_prev_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_90_prev_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures_prev, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_90_prev_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_90_prev_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['30 fracture preventable readmission']] <- paste0(round(getAdjustedSensitivity_fx(fractures_prev, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_30_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_30_prev_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures_prev, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_30_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_30_prev_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 fracture preventable readmission']] <- paste0(round(getAdjustedSensitivity_fx(fractures_prev, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_90_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_90_prev_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures_prev, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_90_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_90_prev_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+#major fx
+sens_spec_results[['30 fracture major standard']] <- paste0(round(getAdjustedSensitivity_fx(fractures_ser, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_30_ser_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_30_ser_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures_ser, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_30_ser_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_30_ser_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 fracture major standard']] <- paste0(round(getAdjustedSensitivity_fx(fractures_ser, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_90_ser_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_90_ser_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures_ser, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_90_ser_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_90_ser_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['30 fracture major readmission']] <- paste0(round(getAdjustedSensitivity_fx(fractures_ser, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_30_ser_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_30_ser_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures_ser, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_30_ser_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_30_ser_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 fracture major readmission']] <- paste0(round(getAdjustedSensitivity_fx(fractures_ser, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_90_ser_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_90_ser_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures_ser, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_90_ser_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_90_ser_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+#selected
+sens_spec_results[['30 fracture selected standard']] <- paste0(round(getAdjustedSensitivity_fx(fractures_sel, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_30_sel_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_30_sel_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures_sel, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_30_sel_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_30_sel_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 fracture selected standard']] <- paste0(round(getAdjustedSensitivity_fx(fractures_sel, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_90_sel_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_90_sel_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures_sel, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_90_sel_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_90_sel_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['30 fracture selected readmission']] <- paste0(round(getAdjustedSensitivity_fx(fractures_sel, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_30_sel_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_30_sel_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures_sel, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_30_sel_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_30_sel_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 fracture selected readmission']] <- paste0(round(getAdjustedSensitivity_fx(fractures_sel, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_fx_90_sel_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_fx_90_sel_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_fx(fractures_sel, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_fx_90_sel_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_fx_90_sel_re, type = "perc")[[4]][5]*100, digits = 1),")")
+```
+
+Elective
+```{r}
+#all elective
+sens_spec_results[['30 elective all standard']] <- paste0(round(getAdjustedSensitivity_elective(elective, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_30_all_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_30_all_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_30_all_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_30_all_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 elective all standard']] <- paste0(round(getAdjustedSensitivity_elective(elective, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_90_all_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_90_all_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_90_all_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_90_all_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['30 elective all readmission']] <- paste0(round(getAdjustedSensitivity_elective(elective, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_30_all_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_30_all_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_30_all_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_30_all_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 elective all readmission']] <- paste0(round(getAdjustedSensitivity_elective(elective, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_90_all_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_90_all_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_90_all_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_90_all_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+#prev elective
+sens_spec_results[['30 elective preventable standard']] <- paste0(round(getAdjustedSensitivity_elective(elective_prev, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_30_prev_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_30_prev_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective_prev, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_30_prev_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_30_prev_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 elective preventable standard']] <- paste0(round(getAdjustedSensitivity_elective(elective_prev, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_90_prev_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_90_prev_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective_prev, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_90_prev_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_90_prev_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['30 elective preventable readmission']] <- paste0(round(getAdjustedSensitivity_elective(elective_prev, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_30_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_30_prev_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective_prev, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_30_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_30_prev_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 elective preventable readmission']] <- paste0(round(getAdjustedSensitivity_elective(elective_prev, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_90_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_90_prev_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective_prev, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_90_prev_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_90_prev_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+#major elective
+sens_spec_results[['30 elective major standard']] <- paste0(round(getAdjustedSensitivity_elective(elective_ser, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_30_ser_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_30_ser_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective_ser, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_30_ser_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_30_ser_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 elective major standard']] <- paste0(round(getAdjustedSensitivity_elective(elective_ser, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_90_ser_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_90_ser_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective_ser, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_90_ser_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_90_ser_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['30 elective major readmission']] <- paste0(round(getAdjustedSensitivity_elective(elective_ser, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_30_ser_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_30_ser_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective_ser, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_30_ser_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_30_ser_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 elective major readmission']] <- paste0(round(getAdjustedSensitivity_elective(elective_ser, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_90_ser_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_90_ser_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(fractures_ser, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_90_ser_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_90_ser_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+#selected elective
+sens_spec_results[['30 elective selected standard']] <- paste0(round(getAdjustedSensitivity_elective(elective_sel, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_30_sel_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_30_sel_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective_sel, type="cat_30_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_30_sel_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_30_sel_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 elective selected  standard']] <- paste0(round(getAdjustedSensitivity_elective(elective_sel, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_90_sel_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_90_sel_std, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective_sel, type="cat_90_std")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_90_sel_std, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_90_sel_std, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['30 elective selected  readmission']] <- paste0(round(getAdjustedSensitivity_elective(elective_sel, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_30_sel_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_30_sel_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(elective_sel, type="cat_30_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_30_sel_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_30_sel_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+sens_spec_results[['90 elective selected  readmission']] <- paste0(round(getAdjustedSensitivity_elective(elective_sel, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_sens_elective_90_sel_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_sens_elective_90_sel_re, type = "perc")[[4]][5]*100, digits = 1),") | "
+  , round(getAdjustedSpecificity_elective(fractures_sel, type="cat_90_re")*100, digits = 1)
+  , " (", round(boot.ci(boot_spec_elective_90_sel_re, type = "perc")[[4]][4]*100, digits = 1), "-",
+   round(boot.ci(boot_spec_elective_90_sel_re, type = "perc")[[4]][5]*100, digits = 1),")")
+
+```
+
+Generating sens/spec table 4
+```{r}
+#3cols 4 rows
+df <- data.frame(matrix(unlist(sens_spec_results), nrow=16, ncol = 3, byrow=F))
+htmlTable(df, header =  paste(rep("Sensitivity | Specificity", 3))
+          , cgroup = c("All patients", "Acute patients", "Elective patients")
+          , n.cgroup = c(1, 1, 1)
+          , rnames = rep(c("Standard 30&dagger;", "Standard 90&dagger;", "Readmission 30&Dagger;", "Readmission 90&Dagger;"), 4)
+          , rgroup = c("All AEs", "Preventable AEs", "Major AEs", "Selected AEs")
+          , n.rgroup = c(4, 4, 4, 4)
+          , caption="Table 4, validation of instrument",
+          tfoot= "&dagger; AEs found (with RRR) during index and readmissions versus instrument (readmissions only)\n&Dagger; AEs found (with RRR) during readmissions versus instrument (readmissions only)\n (95% condidence interval)\n"
+)
+```
+
+Incidence calculations
+```{r}
+getAdjustedIncidence <- function(df, type) {
+        aeDf <- table(df$group, df[[type]])
+        as.data.frame.matrix(aeDf) %>%
+                mutate(AEs = `1`
+                       , pop = c(630, 631, 403, 666, 289, 12628, 206, 3237, 537, 2547)/21774
+                       , sample = c(294, 442, 293, 194, 33, 130, 49, 195, 74, 294)
+                       , rate = AEs / sample
+                       , incidence = rate * pop)
+}
+
+calcAdjustedIncidence <- function(df, d = 1:nrow(df), type) {
+        if (missing(type)) stop("Type required")
+        adjDf <- getAdjustedIncidence(df[d, ], type=type)
+        sum(adjDf$incidence)
+}
+#fractures
+getAdjustedIncidence_fx <- function(df, type) {
+  aeDf <- table(df$group, df[[type]])
+        as.data.frame.matrix(aeDf) %>%
+                mutate(AEs = `1`
+                       , pop = c(274, 294, 199, 341, 194, 2859, 148, 1167, 302, 766)/6544
+                       , sample = c(98, 147, 98, 66, 11, 44, 16, 65, 25, 97)
+                       , rate = AEs / sample
+                       , incidence = rate * pop)
+}
+
+calcAdjustedIncidence_fx <- function(df, d = 1:nrow(df), type, fracture) {
+        if (missing(type)) stop("Type required")
+        adjDf <- getAdjustedIncidence_fx(df[d, ], type=type)
+        sum(adjDf$incidence)
+}
+
+getAdjustedIncidence_elective <- function(df, type) {
+  aeDf <- table(df$group, df[[type]])
+        as.data.frame.matrix(aeDf) %>%
+                mutate(AEs = `1`
+                       , pop = c(356, 337, 204, 325, 95, 9769, 58, 2070, 235, 1781)/15230
+                       , sample = c(196, 295, 195, 129, 22, 86, 33, 131, 49, 197)
+                       , rate = AEs / sample
+                       , incidence = rate * pop)
+}
+
+calcAdjustedIncidence_elective <- function(df, d = 1:nrow(df), type) {
+        if (missing(type)) stop("Type required")
+        adjDf <- getAdjustedIncidence_elective(df[d, ], type=type)
+        sum(adjDf$incidence)
+}
+```
+
+Bootstrapping for CI
+```{r}
+boot_all_30 <- boot(AE_frame, statistic = calcAdjustedIncidence, R = 2000, type = "rrr_both_30")
+boot_all_90 <- boot(AE_frame, statistic = calcAdjustedIncidence, R = 2000, type = "rrr_both_90")
+boot_30_prev <- boot(AE_frame_prev, statistic = calcAdjustedIncidence, R = 2000, type = "rrr_both_30")
+boot_90_prev <- boot(AE_frame_prev, statistic = calcAdjustedIncidence, R = 2000, type = "rrr_both_90")
+boot_30_ser <- boot(AE_frame_ser, statistic = calcAdjustedIncidence, R = 2000, type = "rrr_both_30")
+boot_90_ser <- boot(AE_frame_ser, statistic = calcAdjustedIncidence, R = 2000, type = "rrr_both_90")
+#fx
+boot_30_fx_all <- boot(fractures, statistic = calcAdjustedIncidence_fx, R = 2000, type = "rrr_both_30")
+boot_90_fx_all <- boot(fractures, statistic = calcAdjustedIncidence_fx, R = 2000, type = "rrr_both_90")
+boot_30_fx_prev <- boot(fractures_prev, statistic = calcAdjustedIncidence_fx, R = 2000, type = "rrr_both_30")
+boot_90_fx_prev <- boot(fractures_prev, statistic = calcAdjustedIncidence_fx, R = 200, type = "rrr_both_90")
+boot_30_fx_ser <- boot(fractures_ser, statistic = calcAdjustedIncidence_fx, R = 2000, type = "rrr_both_30")
+boot_90_fx_ser <- boot(fractures_ser, statistic = calcAdjustedIncidence_fx, R = 2000, type = "rrr_both_90")
+#elective
+boot_30_el_all <- boot(elective, statistic = calcAdjustedIncidence_elective, R = 2000, type = "rrr_both_30")
+boot_90_el_all <- boot(elective, statistic = calcAdjustedIncidence_elective, R = 2000, type = "rrr_both_90")
+boot_30_el_prev <- boot(elective_prev, statistic = calcAdjustedIncidence_elective, R = 2000, type = "rrr_both_30")
+boot_90_el_prev <- boot(elective_prev, statistic = calcAdjustedIncidence_elective, R = 2000, type = "rrr_both_90")
+boot_30_el_ser <- boot(elective_ser, statistic = calcAdjustedIncidence_elective, R = 2000, type = "rrr_both_30")
+boot_90_el_ser <- boot(elective_ser, statistic = calcAdjustedIncidence_elective, R = 2000, type = "rrr_both_90")
+
+```
+
+```{r, echo=T}
+incidence_results <- list()
+
+incidence_results[['30 total']] <- paste0(round(calcAdjustedIncidence(AE_frame, type = "rrr_both_30")*100, digits = 1), " (", round(boot.ci(boot_all_30, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_all_30, type = "perc")[[4]][5]*100, digits = 1), ")")
+incidence_results[['90 total']] <- paste0(round(calcAdjustedIncidence(AE_frame, type = "rrr_both_90")*100, digits = 1), " (", round(boot.ci(boot_all_90, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_all_90, type = "perc")[[4]][5]*100, digits = 1), ")")  
+
+incidence_results[['30 prev total']] <- paste0(round(calcAdjustedIncidence(AE_frame_prev, type = "rrr_both_30")*100, digits = 1), " (", round(boot.ci(boot_30_prev, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_30_prev, type = "perc")[[4]][5]*100, digits = 1), ")")
+incidence_results[['90 prev total']] <- paste0(round(calcAdjustedIncidence(AE_frame_prev, type = "rrr_both_90")*100, digits = 1), " (", round(boot.ci(boot_90_prev, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_90_prev, type = "perc")[[4]][5]*100, digits = 1), ")")
+
+incidence_results[['30 major total']] <- paste0(round(calcAdjustedIncidence(AE_frame_ser, type = "rrr_both_30")*100, digits = 1), " (", round(boot.ci(boot_30_ser, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_30_ser, type = "perc")[[4]][5]*100, digits = 1), ")")
+incidence_results[['90 major total']] <- paste0(round(calcAdjustedIncidence(AE_frame_ser, type = "rrr_both_90")*100, digits = 1), " (", round(boot.ci(boot_90_ser, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_90_ser, type = "perc")[[4]][5]*100, digits = 1), ")")
+
+#fractures
+incidence_results[['30 fractures']] <- paste0(round(calcAdjustedIncidence_fx(fractures, type = "rrr_both_30")*100, digits = 1), " (", round(boot.ci(boot_30_fx_all, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_30_fx_all, type = "perc")[[4]][5]*100, digits = 1), ")")
+incidence_results[['90 fractures']] <- paste0(round(calcAdjustedIncidence_fx(fractures, type = "rrr_both_90")*100, digits = 1), " (", round(boot.ci(boot_90_fx_all, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_90_fx_all, type = "perc")[[4]][5]*100, digits = 1), ")")  
+
+incidence_results[['30 prev fractures']] <- paste0(round(calcAdjustedIncidence_fx(fractures_prev, type = "rrr_both_30")*100, digits = 1), " (", round(boot.ci(boot_30_fx_prev, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_30_fx_prev, type = "perc")[[4]][5]*100, digits = 1), ")")
+incidence_results[['90 prev fractures']] <- paste0(round(calcAdjustedIncidence_fx(fractures_prev, type = "rrr_both_90")*100, digits = 1), " (", round(boot.ci(boot_90_fx_prev, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_90_fx_prev, type = "perc")[[4]][5]*100, digits = 1), ")")
+
+incidence_results[['30 major fractures']] <- paste0(round(calcAdjustedIncidence_fx(fractures_ser, type = "rrr_both_30")*100, digits = 1), " (", round(boot.ci(boot_30_fx_ser, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_30_fx_ser, type = "perc")[[4]][5]*100, digits = 1), ")")
+incidence_results[['90 major fractures']] <- paste0(round(calcAdjustedIncidence_fx(fractures_ser, type = "rrr_both_90")*100, digits = 1), " (", round(boot.ci(boot_90_fx_ser, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_90_fx_ser, type = "perc")[[4]][5]*100, digits = 1), ")")
+
+#elective
+incidence_results[['30 elective']] <- paste0(round(calcAdjustedIncidence_elective(elective, type = "rrr_both_30")*100, digits = 1), " (", round(boot.ci(boot_30_el_all, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_30_el_all, type = "perc")[[4]][5]*100, digits = 1), ")")
+incidence_results[['90 elective']] <- paste0(round(calcAdjustedIncidence_elective(elective, type = "rrr_both_90")*100, digits = 1), " (", round(boot.ci(boot_90_el_all, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_90_el_all, type = "perc")[[4]][5]*100, digits = 1), ")")  
+
+incidence_results[['30 prev elective']] <- paste0(round(calcAdjustedIncidence_elective(elective_prev, type = "rrr_both_30")*100, digits = 1), " (", round(boot.ci(boot_30_el_prev, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_30_el_prev, type = "perc")[[4]][5]*100, digits = 1), ")")
+incidence_results[['90 prev elective']] <- paste0(round(calcAdjustedIncidence_elective(elective_prev, type = "rrr_both_90")*100, digits = 1), " (", round(boot.ci(boot_90_el_prev, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_90_el_prev, type = "perc")[[4]][5]*100, digits = 1), ")")
+
+incidence_results[['30 major elective']] <- paste0(round(calcAdjustedIncidence_elective(elective_ser, type = "rrr_both_30")*100, digits = 1), " (", round(boot.ci(boot_30_el_ser, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_30_el_ser, type = "perc")[[4]][5]*100, digits = 1), ")")
+incidence_results[['90 major elective']] <- paste0(round(calcAdjustedIncidence_elective(elective_ser, type = "rrr_both_90")*100, digits = 1), " (", round(boot.ci(boot_90_el_ser, type = "perc")[[4]][4]*100), "-", round(boot.ci(boot_90_el_ser, type = "perc")[[4]][5]*100, digits = 1), ")")
+```
+Table 3
+```{r}
+#3cols 4 rows
+df2 <- data.frame(matrix(unlist(incidence_results), nrow=6, ncol = 3, byrow=F))
+htmlTable(df2, header = c("All patients", "Acute patients", "Elective patients")
+          , rnames = rep(c("Incidence 30 days", "Incidence 90 days"), 3)
+          , rgroup = c("All AEs", "Preventable AEs", "Major AEs")
+          , n.rgroup = c(2, 2, 2)
+          , caption="Table 3, adjusted cumulative incidence of Adverse Events"
+          , tfoot = "maybe some text here")
+
+
+```
+```{r}
+x <- aes %>%
+  mutate(if_else(inj_type == ))
+
+x <- aes %>% #selecting admissions with pos codes
+        mutate(ae_type = if_else(grepl("Allergisk reaktion", inj_type), "Allergic reaction", 
+        if_else(grepl("Anestesirelaterad", inj_type), "AE cause by anaesthesia",
+        if_else(grepl("Blåsöverfyllnad", inj_type), "Distended bladder",
+        if_else(grepl("Blödning, inte", inj_type), "Bleeding",
+        if_else(grepl("Fall", inj_type), "Falls",
+        if_else(grepl("Hudskada", inj_type), "Skin and superficial vessel AEs",
+        if_else(grepl("Infektion", inj_type), "Iatrogenic infections",
+        if_else(grepl("Kirurgisk skada", inj_type), "AEs related to the surgical procedure",
+        if_else(grepl("Neurologisk skada", inj_type), "Neurological AEs",        
+        if_else(grepl("Smärta", inj_type), "Abnormal pain",
+        if_else(grepl("Stroke", inj_type), "Stroke",
+        if_else(grepl("Trombos/emboli", inj_type), "Thrombosis or embolus",
+        if_else(grepl("Trycksår", inj_type), "Pressure ulcer",
+                "Other AEs"
+                ))))))))))))))
+
+df3 <- as.data.frame.matrix(table(x$ae_type, x$correct_ICD_code)) 
+  
+
+htmlTable(df3, header = c("None available ICD-code", "Available ICD-code" ), caption="Table 2, types of AEs and frequency of ICD-codes")
+
+htmlTable(df2, header = c("All patients", "Acute patients", "Elective patients")
+          , rnames = rep(c("Incidence 30 days", "Incidence 90 days"), 3)
+          , rgroup = c("All AEs", "Preventable AEs", "Major AEs")
+          , n.rgroup = c(2, 2, 2)
+          , caption="Table 3, adjusted cumulative incidence of Adverse Events"
+          , tfoot = "maybe some text here")
+```
+```{r}
+
+
+
+#Incidence Multiple AEs incidence rate
+aes_all <- createGroups(aes_all) %>%
+        mutate(AE = if_else(rrr_i == 1 | rrr_30 == 1, 1, 0))
+aes_p <- createGroups(aes_p) %>%
+        mutate(AE = if_else(rrr_i == 1 | rrr_30 == 1, 1, 0))
+aes_s <- createGroups(aes_s) %>%
+        mutate(AE = if_else(rrr_i == 1 | rrr_30 == 1, 1, 0))
+
+getAdjustedIncidence <- function(df, type) {
+        aeDf <- table(df$group, df[[type]])
+        as.data.frame.matrix(aeDf) %>%
+                mutate(AEs = `1`
+                       , pop = c(630, 631, 403, 666, 289, 12628, 206, 3237, 537, 2547)/21774
+                       , sample = c(294, 442, 293, 194, 33, 130, 49, 195, 74, 294)
+                       , rate = AEs / sample
+                       , incidence = rate * pop)
+}
+
+
+getAdjustedIncidence <- function(df, type) {
+        aeDf <- table(df$group, df[[type]])
+        as.data.frame.matrix(aeDf) %>%
+                mutate(AEs = `1`
+                       , pop = c(630, 631, 403, 666, 289, 12628, 206, 3237, 537, 2547)/21774
+                       , sample = c(294, 442, 293, 194, 33, 130, 49, 195, 74, 294)
+                       , rate = AEs / sample
+                       , incidence = rate * pop)
+}
+
+calcAdjustedIncidence <- function(df, d = 1:nrow(df), type) {
+        if (missing(type)) stop("Type required")
+        adjDf <- getAdjustedIncidence(df[d, ], type=type)
+        sum(adjDf$incidence)
+}
+calcAdjustedIncidence(aes_all, type = "AE")
+boot_obj <- boot(aes_all, statistic = calcAdjustedIncidence, R = 3000, type = "AE")
+boot.ci(boot_obj, type = "perc")
+
+calcAdjustedIncidence(aes_p, type = "AE")
+boot_obj <- boot(aes_p, statistic = calcAdjustedIncidence, R = 3000, type = "AE")
+boot.ci(boot_obj, type = "perc")
+
+calcAdjustedIncidence(aes_s, type = "AE")
+boot_obj <- boot(aes_s, statistic = calcAdjustedIncidence, R = 2000, type = "AE")
+boot.ci(boot_obj, type = "perc")
+
+```
+
+```
