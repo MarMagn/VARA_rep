@@ -283,38 +283,6 @@ fx90n$fx <- NULL
 el30n$fx <- NULL
 el90n$fx <- NULL
 
-#data_30_n$has_AE <- factor(data_30_n$has_AE == 0, levels = c(FALSE, TRUE), labels = c(1, 0))
-#data_90_n$has_AE <- factor(data_90_n$has_AE == 0, levels = c(FALSE, TRUE), labels = c(1, 0))
-
-
-# no_na_data_n <- mutate(no_na_data, has_AE = if_else(AEs > 0, 1, 0))
-# no_na_data_n$AEs <- NULL
-# no_na_data$AEs <- NULL
-#na_data <- train_data %>%
-# filter(!complete.cases(.))
-# no_na_data$county <- as.factor(no_na_data$county)
-# no_na_data$cause <- as.factor(no_na_data$cause)
-# no_na_data$has_readm <- factor(no_na_data$readmissions > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
-# no_na_data$readmissions <- NULL
-
-
-
-data_wc <- left_join(no_na_data_sno, ae_data, by = "serial_no") %>%
-  select(-serial_no)
-data_wc_30_i <- select(data_wc, -rrr_90, -pos_90) %>%
-  rename(has_AE = rrr_30)
-data_wc_90_i <- select(data_wc, -rrr_30, -pos_30) %>%
-  rename(has_AE = rrr_90)
-data_wc_30 <- select(data_wc_30_i, -index_ae)
-data_wc_90 <- select(data_wc_90_i, -index_ae)
-data_wc_30_i <- select(data_wc, -rrr_90, -pos_90) %>%
-  rename(has_AE = rrr_30)
-data_wc_90_i <- select(data_wc, -rrr_30, -pos_30) %>%
-  rename(has_AE = rrr_90)
-data_wc_30 <- select(data_wc_30_i, -index_ae)
-data_wc_90 <- select(data_wc_90_i, -index_ae)
-
-data_wc_30_l <- mutate(data_wc_30, has_AE = factor(has_AE == 1, levels = c(TRUE, FALSE), labels = c("Yes", "No")))
-data_wc_30_i_l <- mutate(data_wc_30_i, has_AE = factor(has_AE == 1, levels = c(TRUE, FALSE), labels = c("Yes", "No")))
-data_wc_90_l <- mutate(data_wc_90, has_AE = factor(has_AE == 1, levels = c(TRUE, FALSE), labels = c("Yes", "No")))
-data_wc_90_i_l <- mutate(data_wc_90_i, has_AE = factor(has_AE == 1, levels = c(TRUE, FALSE), labels = c("Yes", "No")))
+data_wc <- left_join(no_na_data_sno, ae_data, by = "serial_no") 
+fractures <- filter(data_wc, fx == "Fracture")
+electives <- filter(data_wc, fx != "Fracture")
