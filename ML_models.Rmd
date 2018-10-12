@@ -1,0 +1,304 @@
+---
+title: "ML_models"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(Gmisc)
+library(tidyverse)
+library(boot)
+library(randomForest)
+library(ranger)
+library(neuralnet)
+library(nnet)
+library(e1071)
+library(splines)
+library(magrittr)
+library(InformationValue)
+library(tensorflow)
+library(keras)
+library(pROC)
+```
+
+
+```{r}
+source("load_model_data.R")
+rm(ac, aes, ag_data, data_3, index, readm, rrr_all, rrr_data, ae_data, master, rrr_30, rrr_90, train_data, index_ae, AE_frame, el_frame, fx_frame, keys, keys2, x, maj_30, maj_90)
+```
+creating dataset for ML
+```{r}
+
+getModelDatasets <- function(ds) {
+      model_datasets <- list()
+      for (days in c(30, 90)) {
+        ds_name <- sprintf("%s", days)
+        drop_vars <- c("serial_no", "maj_30", "maj_90")
+        if (days == 30) {
+          drop_vars <- c(drop_vars, paste(c("rrr", "pos"), 90, sep="_"))
+          rename_vars <- c(has_AE = "rrr_30")
+          raw_var <- "pos_30"
+          ind_var <- "index_ae"
+        } else if (days == 90) {
+          drop_vars <- c(drop_vars, paste(c("rrr", "pos"), 30, sep="_"))
+          rename_vars <- c(has_AE = "rrr_90")
+          raw_var <- "pos_90"
+        } else {
+          stop("Days not implemented")
+        }
+        
+        model_datasets[[sprintf("%s_index_c", ds_name)]] <- select(ds, -!!drop_vars, !!rename_vars)
+        model_datasets[[sprintf("%s_wc", ds_name)]] <- model_datasets[[sprintf("%s_index_c", ds_name)]] %>%
+          select(-!!ind_var)
+        model_datasets[[ds_name]] <- model_datasets[[sprintf("%s_wc", ds_name)]] %>%
+          select(-!!raw_var)
+      }
+      return(model_datasets)
+}
+model_datasets <- getModelDatasets(no_na_data)
+#small_datasets <- getModelDatasets(small_data)
+```
+Run ML models and generating output table
+```{r}
+getSensSpec <- function(my_data, getModelResults, no_splits = 10) {
+  shuffled <- sample(nrow(my_data), replace = FALSE)
+  batch_size <- floor(length(shuffled)/no_splits)
+  results <- list()
+  for (i in 0:(no_splits-1)) {
+    if (i == no_splits - 1) {
+      test_rows <- shuffled[(i*batch_size + 1):length(shuffled)]
+    } else {
+      test_rows <- shuffled[1:batch_size + i*batch_size]
+    }
+    train_rows <- shuffled[!(shuffled %in% test_rows)]
+    train <- my_data[train_rows, ]
+    test <- my_data[test_rows, ]
+    results <- append(results, getModelResults(train = train, test = test))
+  }
+  result_df <- data.frame(matrix(unlist(results), nrow=10, byrow=T))
+  colnames(result_df) <-c("TN", "FP", "FN", "TP", "AUC")
+  result_df <- mutate(result_df, pos = TP + FN, neg = TN + FP, sens = TP/pos, spec = TN/neg, accuracy = (TN+TP)/(pos+neg))
+  
+  c(Sensitivity = mean(result_df$sens) ,
+    Specificity = mean(result_df$spec),
+    AUC = mean(result_df$AUC),
+    Accuracy = mean(result_df$accuracy))
+  # if (mean(result_df$AUC > 1)) {browser()}
+
+}
+
+runMlModelsOnDs <- function(my_data) {
+  runs <- list()
+  runs <- c(runs,
+            list("Random forest crude" = getSensSpec(my_data, getModelResults = function(train, test) {
+  cross_model <- ranger(has_AE~., data = train)
+  p <- predict(cross_model, data = test )
+  rfRoc <- data.frame(response = test$has_AE, predictor = p$predictions) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_res <- auc(rfRoc)
+  test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+  p$predictions <- ifelse(p$predictions< 0.5, "No", "Yes")
+  list(table(predicted = p$predictions, true=test$has_AE), auc_res)
+            })))
+  runs <- c(runs,
+            list("Random forest weighted" = getSensSpec(my_data, getModelResults = function(train, test) {
+              cross_model <- ranger(has_AE~los+ readmissions+ age, data = train, case.weights = (1 +(train$has_AE == 0)*4))
+              p <- predict(cross_model, data = test)
+              rangerRoc <- data.frame(response = test$has_AE, predictor = p$predictions) %>%
+                arrange(predictor) %>%
+                with(., roc(response, predictor))
+              auc_res <- auc(rangerRoc)
+              test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+              p$predictions <- ifelse(p$predictions< 0.5, "No", "Yes")
+              list(table(predicted = p$predictions, true=test$has_AE), auc_res)
+            })))
+
+  runs <- c(runs,
+            list("Logistic regression crude" = getSensSpec(my_data, getModelResults = function(train, test) {
+              cross_model_log <- glm(has_AE ~.,
+                                     family = binomial(link = logit),
+                                     data = train)
+              p <- predict(cross_model_log, newdata = test, type = "response")
+              logRoc <- data.frame(response = test$has_AE, predictor = p) %>%
+                arrange(predictor) %>%
+                with(., roc(response, predictor))
+              auc_res <- auc(logRoc)
+              test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+              p <- ifelse(p > 0.5, "Yes", "No")
+              list(table(predicted = p, true=test$has_AE), auc_res)
+            })))
+  runs <- c(runs,
+            list("Logistic regression weighted" = getSensSpec(my_data, getModelResults = function(train, test) {
+              cross_model_log <- glm(has_AE ~los+ readmissions+ age,
+                                     family = binomial(link = logit),
+                                     data = train,
+                                     weights = (1 +(train$has_AE == 0)*1.5))
+              p <- predict(cross_model_log, newdata = test, type = "response")
+              logRoc <- data.frame(response = test$has_AE, predictor = p) %>%
+                arrange(predictor) %>%
+                with(., roc(response, predictor))
+              auc_res <- (auc(logRoc))
+              test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+              p <- ifelse(p > 0.5, "Yes", "No")
+              list(table(predicted = p, true=test$has_AE), auc_res)
+            })))
+
+  runs <- c(runs,
+            list("Logistic regression with splines crude" = getSensSpec(my_data, getModelResults = function(train, test) {
+              cross_model_log <- glm(has_AE ~.,
+                                     family = binomial(link = logit),
+                                     data = train)
+              cross_model_log %<>% update(.~.- age + ns(age, 2))
+              p <- predict(cross_model_log, newdata = test, type = "response")
+              logRoc <- data.frame(response = test$has_AE, predictor = p) %>%
+                arrange(predictor) %>%
+                with(., roc(response, predictor))
+              auc_res <- auc(logRoc)
+              test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+              p <- ifelse(p > 0.5, "Yes", "No")
+              list(table(predicted = p, true=test$has_AE), auc_res)
+            })))
+
+  runs <- c(runs,
+            list("Logistic regression with splines weighted" = getSensSpec(my_data, getModelResults = function(train, test) {
+              cross_model_log <- glm(has_AE ~.,
+                                     family = binomial(link = logit),
+                                     data = train,
+                                     weights = (1 +(train$has_AE == 0)*2.3))
+              cross_model_log %<>% update(.~.- age + ns(age, 2))
+              p <- predict(cross_model_log, newdata = test, type = "response")
+              logRoc <- data.frame(response = test$has_AE, predictor = p) %>%
+                arrange(predictor) %>%
+                with(., roc(response, predictor))
+              auc_res <- auc(logRoc)
+              test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+              p <- ifelse(p > 0.5, "Yes", "No")
+              list(table(predicted = p, true=test$has_AE), auc_res)
+            })))
+
+  runs <- c(runs,
+            list("Support vector machines" = getSensSpec(my_data, getModelResults = function(train, test) {
+  cross_model_svm <- svm(has_AE~., data = train)
+  p <- predict(cross_model_svm, newdata = test)
+  svmRoc <- data.frame(response = test$has_AE, predictor = p) %>%
+    arrange(predictor) %>%
+    with(., roc(response, predictor))
+  auc_res <- (auc(svmRoc))
+  test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+  p <- ifelse(p< 0.5, "No", "Yes")
+  list(table(predicted = p, true=test$has_AE), auc_res)
+            })))
+ }
+
+results <- sapply(model_datasets, simplify = FALSE, FUN = runMlModelsOnDs)
+
+tmp <- lapply(results, function(x) do.call(rbind, x))
+names(tmp) <- c("30 days with index codes", "30 with readmission codes", "30 days",  "90 days with index codes", "90 with readmission codes", "90 days", "90 days with index codes major", "90 with readmission codes major", "90 days major")
+htmlTable(
+  do.call(rbind, tmp) %>% txtRound(digits=2),
+  rgroup = names(tmp),
+  n.rgroup = sapply(tmp, nrow),
+  caption = "All patients with codes and major AEs"
+)
+```
+```{r}
+results <- sapply(small_datasets, simplify = FALSE, FUN = runMlModelsOnDs)
+
+tmp <- lapply(results, function(x) do.call(rbind, x))
+names(tmp) <- c("30 days with index codes", "30 with readmission codes", "30 days", "90 days with index codes", "90 with readmission codes", "90 days")
+htmlTable(
+  do.call(rbind, tmp) %>% txtRound(digits=2),
+  rgroup = names(tmp),
+  n.rgroup = sapply(tmp, nrow),
+  caption = "All patients small",
+  tfoot = names(small_datasets$`30_index_c`)
+)
+```
+create fracture datasets
+```{r}
+ds <- fractures
+
+    fracture_datasets <- list()
+    for (days in c(30, 90)) {
+      ds_name <- sprintf("%s", days)
+      drop_vars <- c("serial_no", "fx")
+      if (days == 30) {
+        drop_vars <- c(drop_vars, paste(c("rrr", "pos"), 90, sep="_"))
+        rename_vars <- c(has_AE = "rrr_30")
+        raw_var <- "pos_30"
+        ind_var <- "index_ae"
+      } else if (days == 90) {
+        drop_vars <- c(drop_vars, paste(c("rrr", "pos"), 30, sep="_"))
+        rename_vars <- c(has_AE = "rrr_90")
+        raw_var <- "pos_90"
+      } else {
+        stop("Days not implemented")
+      }
+      
+      fracture_datasets[[sprintf("%s_index_c", ds_name)]] <- select(ds, -!!drop_vars, !!rename_vars)
+      fracture_datasets[[sprintf("%s_wc", ds_name)]] <- fracture_datasets[[sprintf("%s_index_c", ds_name)]] %>%
+        select(-!!ind_var)
+      fracture_datasets[[ds_name]] <- fracture_datasets[[sprintf("%s_wc", ds_name)]] %>%
+        select(-!!raw_var)
+      }
+
+```
+Run model on fractures
+```{r}
+results <- sapply(fracture_datasets, simplify = FALSE, FUN = runMlModelsOnDs)
+
+tmp <- lapply(results, function(x) do.call(rbind, x))
+names(tmp) <- c("30 days with index codes", "30 with readmission codes", "30 days", "90 days with index codes", "90 with readmission codes", "90 days")
+htmlTable(
+  do.call(rbind, tmp) %>% txtRound(digits=2),
+  rgroup = names(tmp),
+  n.rgroup = sapply(tmp, nrow),
+  caption = "Fractures"
+)
+```
+
+create elective datasets
+```{r}
+ds <- electives
+
+    elective_datasets <- list()
+    for (days in c(30, 90)) {
+      ds_name <- sprintf("%s", days)
+      drop_vars <- c("serial_no", "fx")
+      if (days == 30) {
+        drop_vars <- c(drop_vars, paste(c("rrr", "pos"), 90, sep="_"))
+        rename_vars <- c(has_AE = "rrr_30")
+        raw_var <- "pos_30"
+        ind_var <- "index_ae"
+      } else if (days == 90) {
+        drop_vars <- c(drop_vars, paste(c("rrr", "pos"), 30, sep="_"))
+        rename_vars <- c(has_AE = "rrr_90")
+        raw_var <- "pos_90"
+      } else {
+        stop("Days not implemented")
+      }
+      
+      elective_datasets[[sprintf("%s_index_c", ds_name)]] <- select(ds, -!!drop_vars, !!rename_vars)
+      elective_datasets[[sprintf("%s_wc", ds_name)]] <- elective_datasets[[sprintf("%s_index_c", ds_name)]] %>%
+        select(-!!ind_var)
+      elective_datasets[[ds_name]] <- elective_datasets[[sprintf("%s_wc", ds_name)]] %>%
+        select(-!!raw_var)
+      }
+
+```
+Run model on electives
+```{r}
+results <- sapply(elective_datasets, simplify = FALSE, FUN = runMlModelsOnDs)
+
+tmp <- lapply(results, function(x) do.call(rbind, x))
+names(tmp) <- c("30 days with index codes", "30 with readmission codes", "30 days", "90 days with index codes", "90 with readmission codes", "90 days")
+htmlTable(
+  do.call(rbind, tmp) %>% txtRound(digits=2),
+  rgroup = names(tmp),
+  n.rgroup = sapply(tmp, nrow),
+  caption = "Elective patients"
+)
+```
