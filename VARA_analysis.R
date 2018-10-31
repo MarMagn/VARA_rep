@@ -1,4 +1,5 @@
 source("load_base_files.R")
+source("Index frame.R")
 sp_prim <- sp_total %>%
         mutate(days = op_date - adm_date, days2 = disc_date - op_date) %>% 
         filter(days >= 0, days2 > 0) #Selecting primary admissions
@@ -49,7 +50,7 @@ ae_data <- ae_data %>%
         mutate(pos_30 = if_else(ae_30 == 1 | dead_30 == 1, 1, 0)) %>%
         mutate(pos_90 = if_else(ae_90 == 1 | dead_90 == 1, 1, 0)) %>%
         select(serial_no, pos_30, pos_90, los_group, readm_group)
-rm(fn, codes_all, codes_main, sp_total, dead, mort, sp_prim, dead_index, index, re_30, re_90)
+rm(fn, codes_all, codes_main, sp_total, dead, mort, sp_prim, dead_index, re_30, re_90)
 #VARA AEs from RRR
 fn <- file.path(base_location, "ae_data.csv")
 rrr_data <- read.csv(file=fn, encoding=encoding_type)
@@ -58,7 +59,7 @@ rrr_data$event_date <- as.Date(rrr_data$event_date)
 
 aes <- rrr_data %>%
         filter( causality > 2 ) %>%
-        left_join(ac, by = "serial_no") 
+        left_join(index, by = "serial_no") 
 
 aes <- aes %>%
         mutate(days = event_date - op_date) %>%

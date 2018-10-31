@@ -1,0 +1,16 @@
+base
+knitr
+tidyr
+dplyr
+Rcpp
+htmlTable
+Gmisc
+tidyverse
+ggplot2
+tibble
+readr
+purrr
+stringr
+forcats
+boot
+bindrcpp

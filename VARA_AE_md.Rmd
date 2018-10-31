@@ -85,7 +85,7 @@ rm(fn, codes_all, codes_main, sp_total, dead, mort, sp_prim, dead_index, re_30, 
 Adding AEs from RRR
 ```{r}
 fn <- file.path(base_location, "ae_data.csv")
-rrr_data <- read.csv(file=fn, encoding=encoding_type)
+rrr_data <- read.delim2(file=fn, encoding="latin", sep = ";")
 
 rrr_data$event_date <- as.Date(rrr_data$event_date)
 
@@ -760,6 +760,7 @@ getAdjustedIncidence <- function(df, type) {
                        , sample = c(294, 442, 293, 194, 33, 130, 49, 195, 74, 294)
                        , rate = AEs / sample
                        , incidence = rate * pop)
+       xx <<-aeDf
 }
 
 calcAdjustedIncidence <- function(df, d = 1:nrow(df), type) {

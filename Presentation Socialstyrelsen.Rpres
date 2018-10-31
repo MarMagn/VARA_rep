@@ -149,8 +149,7 @@ library(nnet)
 rm(list = ls())
 data_1 <- read.csv("/Users/martinmagneli/Desktop/Testanalys VARA/tab_1_alder.csv", encoding="latin1")
 data_2 <- read.csv("/Users/martinmagneli/Desktop/Testanalys VARA/tab_1_kon.csv", encoding="latin1")
-data_3 <- read.csv("/Users/martinmagneli/Desktop/Testanalys VARA/tab_3.csv", encoding="latin1", dec = ",", na.strings = ".")
-
+data_3 <- read.csv("/Volumes/NO NAME/VARA_DATA_orginal/tab_3.csv", encoding="latin1", dec = ",", na.strings = ".")
 data_3$VTID_Median <- NULL
 base_location <- file.path("/Volumes/NO NAME/VARA_DATA_orginal/")
 encoding_type = "latin1"

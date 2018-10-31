@@ -60,6 +60,33 @@ getModelDatasets <- function(ds) {
 model_datasets <- getModelDatasets(no_na_data)
 #small_datasets <- getModelDatasets(small_data)
 ```
+```{r}
+
+getModelDatasets <- function(ds) {
+      model_datasets <- list()
+      for (days in c(30, 90)) {
+        ds_name <- sprintf("%s", days)
+        drop_vars <- c("serial_no", "maj_30", "maj_90", "index_ae")
+        if (days == 30) {
+          drop_vars <- c(drop_vars, paste(c("rrr", "pos"), 90, sep="_"))
+          rename_vars <- c(has_AE = "rrr_30")
+          raw_var <- "pos_30"
+        } else if (days == 90) {
+          drop_vars <- c(drop_vars, paste(c("rrr", "pos"), 30, sep="_"))
+          rename_vars <- c(has_AE = "rrr_90")
+          raw_var <- "pos_90"
+        } else {
+          stop("Days not implemented")
+        }
+        
+        model_datasets[[sprintf("%s_wc", ds_name)]] <- select(ds, -!!drop_vars, !!rename_vars) 
+        model_datasets[[ds_name]] <- model_datasets[[sprintf("%s_wc", ds_name)]] %>%
+          select(-!!raw_var)
+      }
+      return(model_datasets)
+}
+model_datasets <- getModelDatasets(no_na_data)
+```
 Run ML models and generating output table
 ```{r}
 getSensSpec <- function(my_data, getModelResults, no_splits = 10) {
@@ -81,12 +108,10 @@ getSensSpec <- function(my_data, getModelResults, no_splits = 10) {
   colnames(result_df) <-c("TN", "FP", "FN", "TP", "AUC")
   result_df <- mutate(result_df, pos = TP + FN, neg = TN + FP, sens = TP/pos, spec = TN/neg, accuracy = (TN+TP)/(pos+neg))
   
-  c(Sensitivity = mean(result_df$sens) ,
-    Specificity = mean(result_df$spec),
-    AUC = mean(result_df$AUC),
-    Accuracy = mean(result_df$accuracy))
-  # if (mean(result_df$AUC > 1)) {browser()}
-
+  c(Sensitivity = mean(result_df$sens, na.rm = TRUE) ,
+    Specificity = mean(result_df$spec, na.rm = TRUE),
+    AUC = mean(result_df$AUC, na.rm = TRUE),
+    Accuracy = mean(result_df$accuracy, na.rm = TRUE))
 }
 
 runMlModelsOnDs <- function(my_data) {
@@ -116,9 +141,9 @@ runMlModelsOnDs <- function(my_data) {
               list(table(predicted = p$predictions, true=test$has_AE), auc_res)
             })))
 
-  runs <- c(runs,
+    runs <- c(runs,
             list("Logistic regression crude" = getSensSpec(my_data, getModelResults = function(train, test) {
-              cross_model_log <- glm(has_AE ~.,
+              cross_model_log <- glm(has_AE ~. + age*los,
                                      family = binomial(link = logit),
                                      data = train)
               p <- predict(cross_model_log, newdata = test, type = "response")
@@ -162,22 +187,22 @@ runMlModelsOnDs <- function(my_data) {
               list(table(predicted = p, true=test$has_AE), auc_res)
             })))
 
-  runs <- c(runs,
-            list("Logistic regression with splines weighted" = getSensSpec(my_data, getModelResults = function(train, test) {
-              cross_model_log <- glm(has_AE ~.,
-                                     family = binomial(link = logit),
-                                     data = train,
-                                     weights = (1 +(train$has_AE == 0)*2.3))
-              cross_model_log %<>% update(.~.- age + ns(age, 2))
-              p <- predict(cross_model_log, newdata = test, type = "response")
-              logRoc <- data.frame(response = test$has_AE, predictor = p) %>%
-                arrange(predictor) %>%
-                with(., roc(response, predictor))
-              auc_res <- auc(logRoc)
-              test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
-              p <- ifelse(p > 0.5, "Yes", "No")
-              list(table(predicted = p, true=test$has_AE), auc_res)
-            })))
+runs <- c(runs,
+          list("Logistic regression with splines weighted" = getSensSpec(my_data, getModelResults = function(train, test) {
+            cross_model_log <- glm(has_AE ~.,
+                                   family = binomial(link = logit),
+                                   data = train,
+                                   weights = (1 +(train$has_AE == 0)*2.3))
+            cross_model_log %<>% update(.~.- age + ns(age, 2))
+            p <- predict(cross_model_log, newdata = test, type = "response")
+            logRoc <- data.frame(response = test$has_AE, predictor = p) %>%
+              arrange(predictor) %>%
+              with(., roc(response, predictor))
+            auc_res <- auc(logRoc)
+            test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+            p <- ifelse(p > 0.5, "Yes", "No")
+            list(table(predicted = p, true=test$has_AE), auc_res)
+          })))
 
   runs <- c(runs,
             list("Support vector machines" = getSensSpec(my_data, getModelResults = function(train, test) {
@@ -189,14 +214,16 @@ runMlModelsOnDs <- function(my_data) {
   auc_res <- (auc(svmRoc))
   test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
   p <- ifelse(p< 0.5, "No", "Yes")
-  list(table(predicted = p, true=test$has_AE), auc_res)
+  x <- table(predicted = p, true=test$has_AE)
+  if (nrow(x) == 1) {x <- matrix(nrow = 2, ncol = 2, c(NA, NA, NA, NA))}
+  list(x, auc_res)
             })))
  }
 
 results <- sapply(model_datasets, simplify = FALSE, FUN = runMlModelsOnDs)
 
 tmp <- lapply(results, function(x) do.call(rbind, x))
-names(tmp) <- c("30 days with index codes", "30 with readmission codes", "30 days",  "90 days with index codes", "90 with readmission codes", "90 days", "90 days with index codes major", "90 with readmission codes major", "90 days major")
+names(tmp) <- c( "30 with readmission codes", "30 days","90 with readmission codes", "90 days")
 htmlTable(
   do.call(rbind, tmp) %>% txtRound(digits=2),
   rgroup = names(tmp),
@@ -213,9 +240,8 @@ htmlTable(
   do.call(rbind, tmp) %>% txtRound(digits=2),
   rgroup = names(tmp),
   n.rgroup = sapply(tmp, nrow),
-  caption = "All patients small",
-  tfoot = names(small_datasets$`30_index_c`)
-)
+  caption = "Results on training data for all models")
+
 ```
 create fracture datasets
 ```{r}

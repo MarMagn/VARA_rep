@@ -1,0 +1,133 @@
+---
+title: "LÖF tables"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Table1
+```{r}
+source("Index frame.R")
+fn <- file.path(base_location, "ae_data.csv")
+rrr_data <- read.csv2(file=fn, encoding=encoding_type, sep = ",")
+#recoding 3 cases
+rrr_data <- rrr_data %>%
+  mutate(causality = if_else(serial_no == "11530" & inj_type == "Infektion - Hud, mjukdelar", 3, as.numeric(rrr_data$causality)), inj_type = if_else(serial_no == "11530" & inj_type == "Infektion - Hud, mjukdelar", "Infektion - Leder, skelett", as.character(rrr_data$inj_type))) 
+
+
+rrr_data <- mutate(rrr_data, inj_type = if_else(serial_no == "13497" & inj_type =="Infektion - Hud, mjukdelar", "Infektion - Leder, skelett", as.character(rrr_data$inj_type))) 
+
+
+rrr_data <- mutate(rrr_data, inj_type = if_else(serial_no == "14814" & inj_type == "Infektion - Sepsis", "Infektion - Leder, skelett", as.character(rrr_data$inj_type)))
+
+index$op_date <- as.Date(index$op_date)
+rrr_data$event_date <- as.Date(rrr_data$event_date)
+aes_all <- rrr_data %>%
+        filter( causality > 2 ) %>%
+        left_join(index, by = "serial_no") 
+aes_prev <- filter(aes_all, avoidability > 2)
+aes_prev_maj <- filter(aes_prev, NCCMERP > 5)
+
+pji <- filter(aes_all, inj_type == "Infektion - Leder, skelett") %>%
+  distinct(serial_no, .keep_all = T)
+seps <- filter(aes_all, inj_type == "Infektion - Sepsis")
+skin <- filter(aes_all, inj_type == "Infektion - Hud, mjukdelar")
+
+index <- mutate(index, art_type = if_else(grepl("NFB19", index$op_code) | grepl("NFB09", index$op_code), "hemi", "total"))
+
+
+calc_ind <- index %>%
+  summarise(age_med = median(age), age_min = min(age), age_max = max(age))
+table(index$sex)
+table(index$fx)
+
+
+
+aes <-distinct(aes_all, serial_no) %>%
+        mutate(AE = 1)
+cat_frame <- left_join(index, aes, by = "serial_no")
+cat_frame$AE[is.na(cat_frame$AE)] <- 0
+calc <- cat_frame %>%
+  group_by(AE) %>%
+  summarise(age_med = median(age), age_min = min(age), age_max = max(age))
+table(cat_frame$AE, cat_frame$sex)
+table(cat_frame$AE, cat_frame$fx)
+
+LOF <- read.delim("/Volumes/NO NAME/LOF_AE_description_x.csv", 
+                              header=TRUE, 
+                              encoding="latin1", 
+                              stringsAsFactors=FALSE, sep = ";")
+LOF_index_all <- left_join(LOF, index, by = "serial_no")
+LOF_index <- distinct(LOF_index_all, serial_no, .keep_all = T)
+table(LOF_index$fx)
+table(LOF_index$sex)
+table(LOF_index$art_type)
+ae <- distinct(aes_all, serial_no, .keep_all = T) %>%
+  left_join(index, by = "serial_no")
+no_ae <- anti_join(index, ae, by ="serial_no")
+table(ae$art_type)
+table(no_ae$art_type)
+```
+
+PJIS table 3
+```{r}
+pji <- filter(aes_all, inj_type == "Infektion - Leder, skelett") %>%
+  distinct(serial_no, .keep_all = T)
+pji_age <- summarise(pji, age_med = median(age), age_min = min(age), age_max = max(age))
+table(pji$sex)
+table(pji$fx)
+
+no_pji <- anti_join(index, pji, by = "serial_no")
+no_pji_age <- summarise(no_pji, age_med = median(age), age_min = min(age), age_max = max(age))
+table(no_pji$sex)
+table(no_pji$fx)
+
+LOF_pji <- filter(LOF_index_all, AE_type_1 == "inf_d")
+LOF_pji_age <- summarise(LOF_pji, age_med = median(age), age_min = min(age), age_max = max(age))
+table(LOF_pji$sex)
+table(LOF_pji$fx)
+
+pji_no_lof <- anti_join(pji, LOF_pji, by = "serial_no")
+pji_no_lof_age <- summarise(pji_no_lof, age_med = median(age), age_min = min(age), age_max = max(age))
+table(pji_no_lof$sex)
+table(pji_no_lof$fx)
+##Table 4
+pji <- mutate(pji, art_type = if_else(grepl("NFB19", pji$op_code) | grepl("NFB09", pji$op_code), "hemi", "total"))
+table(pji$art_type)
+pji_claim <- left_join(LOF_pji, pji, by = "serial_no")
+table(pji_claim$art_type)
+pji_no_claim <- anti_join(pji, pji_claim, by ="serial_no")
+table(pji_no_claim$art_type)
+art_type_all <- mutate(index, art_type = if_else(grepl("NFB19", index$op_code) | grepl("NFB09", index$op_code), "hemi", "total"))
+table(art_type_all$art_type)
+no_pji_art <- anti_join(art_type_all, pji, by = "serial_no")
+table(no_pji_art$art_type)
+
+pji_hemi <- filter(pji, grepl("NFB19", pji$op_code) | grepl("NFB09", pji$op_code))
+pji_total <- anti_join(pji, pji_hemi, by ="serial_no")
+lof_hemi <- filter(LOF_pji, grepl("NFB19", LOF_pji$op_code) | grepl("NFB09", LOF_pji$op_code))
+lof_total <- anti_join(LOF_pji, lof_hemi, by = "serial_no")
+no_claim_hemi <- filter(pji_no_lof, grepl("NFB19", pji_no_lof$op_code) | grepl("NFB09", pji_no_lof$op_code))
+no_claim_total <- anti_join(pji_no_lof, no_claim_hemi, by = "serial_no")
+c <- filter(b, grepl("NFB19", b$op_code) | grepl("NFB09", b$op_code))
+
+tabl <- group_by(aes_all, inj_type) %>%
+  summarise(n())
+```
+
+sens/spec
+```{r}
+LOF_cat <- mutate(LOF_index, LOF = 1) %>%
+  select(serial_no, LOF)
+cat_frame <- left_join(cat_frame, LOF_cat, by = "serial_no")
+cat_frame$LOF[is.na(cat_frame$LOF)] <- 0
+
+cat_frame <- cat_frame %>%
+  mutate(test = if_else(LOF == 1 & AE == 1, "TP",
+                if_else(LOF == 0 & AE == 0, "TN",
+                if_else(LOF == 1 & AE == 0, "FP",
+                "FN"))))
+table(cat_frame$test)
+```

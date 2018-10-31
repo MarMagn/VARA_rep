@@ -11,7 +11,7 @@ keys2 <- read.csv("/Volumes/NO NAME/VARA_DATA_orginal/selectedpatients.csv") %>%
   select(-X) #Selecting trainding data
 #rm(keys)
 ac <- select(ac, - serial_no)
-ac <- left_join(keys2, ac, by = "pnr")
+ac <- left_join(keys, ac, by = "pnr")
 
 fn <- file.path(base_location, "aeindexvtfstudiepop.txt")
 index <- read.delim(file=fn, 
@@ -21,7 +21,7 @@ index <- read.delim(file=fn,
   select(pnr=Personnummer, hospital = Sjukhus..klartext, residence = Hemförsamling
          , city = Hemkommun, county = Hemlän)
 
-index <- left_join(keys2, index, by = "pnr") %>%
+index <- left_join(keys, index, by = "pnr") %>%
   distinct(serial_no, .keep_all = T) %>%
   left_join(ac, by = "serial_no") 
 index <- index %>% mutate(fx = factor(fx, levels=c("Ja", "Nej")
@@ -106,8 +106,8 @@ rrr_data$event_date <- as.Date(rrr_data$event_date)
 
 aes <- rrr_data %>%
   filter( causality > 2 ) %>%
-  left_join(keys2, by = "serial_no") 
- x <- na.omit(aes)
+  left_join(keys, by = "serial_no") 
+x <- na.omit(aes)
 x <- left_join(x, ac, by = "serial_no")
 aes <- select(x, serial_no, event_date, inj_type, causality, avoidability, NCCMERP, op_date) %>%
   mutate(days = event_date - op_date) %>%
@@ -232,9 +232,12 @@ master <- left_join(master, ag_data, by = c("type", "op_date", "age", "sex", "fx
 
 master <- select(master, -op_date, -hospital, -county)
 master <- mutate(master, type = factor(type, labels=c("countypart", "central_county", "private", "university"))
-                     , sex = factor(sex, labels=c("Female", "Male"))
-                     , fx = factor(fx, labels=c("Fracture", "Elective")))
+                 , sex = factor(sex, labels=c("Female", "Male"))
+                 , fx = factor(fx, labels=c("Fracture", "Elective")))
 
-no_na_data <- na.omit(master)
-
-
+training_cases <- mutate(keys2, what_set = "TR")
+holdout_cases <- anti_join(keys, keys2) %>%
+  mutate(what_set = "HO")
+all_cases <- rbind(training_cases, holdout_cases) %>%
+  select(-pnr)
+final_data <- left_join(master, all_cases, by = "serial_no")

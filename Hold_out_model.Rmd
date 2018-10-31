@@ -1,0 +1,166 @@
+---
+title: "Model with hold out set"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+source("load_hold_out.R")
+rm( ag_data, data_3, index, readm, rrr_all, rrr_data, ae_data, master, rrr_30, rrr_90, train_data, index_ae, AE_frame, el_frame, fx_frame, no_na_data, keys, keys2, all_data, maj_30, maj_90, ac, aes, all_cases, train_cases, x, holdout_cases)
+```
+Creating datasets
+```{r}
+calcSens <- function(x) {
+        y <- x['Yes', 'Yes']/sum(x[ ,'Yes'])
+}
+calcSpec <- function(x) {
+        y <- x['No', 'No']/sum(x[ ,'No'])
+}
+calcAcc <- function(x) {
+        y <- sum(x['No', 'No'] + x['Yes', 'Yes'])/sum(x)
+}
+getModelDatasets <- function(ds) {
+      model_datasets <- list()
+      for (days in c(30, 90)) {
+        ds_name <- sprintf("%s", days)
+        drop_vars <- c("serial_no", "maj_30", "maj_90")
+        if (days == 30) {
+          drop_vars <- c(drop_vars, paste(c("rrr", "pos"), 90, sep="_"))
+          rename_vars <- c(has_AE = "rrr_30")
+          raw_var <- "pos_30"
+          ind_var <- "index_ae"
+        } else if (days == 90) {
+          drop_vars <- c(drop_vars, paste(c("rrr", "pos"), 30, sep="_"))
+          rename_vars <- c(has_AE = "rrr_90")
+          raw_var <- "pos_90"
+        } else {
+          stop("Days not implemented")
+        }
+        
+        model_datasets[[sprintf("%s_index_c", ds_name)]] <- select(ds, -!!drop_vars, !!rename_vars)
+        model_datasets[[sprintf("%s_wc", ds_name)]] <- model_datasets[[sprintf("%s_index_c", ds_name)]] %>%
+          select(-!!ind_var)
+        model_datasets[[ds_name]] <- model_datasets[[sprintf("%s_wc", ds_name)]] %>%
+          select(-!!raw_var)
+      }
+      return(model_datasets)
+}
+final_fx <- filter(final_data, fx == "Fracture")
+final_el <- filter(final_data, fx == "Elective")
+final_datasets <- getModelDatasets(final_data)
+final_fx <- getModelDatasets(final_fx)
+final_el <- getModelDatasets(final_el)
+```
+Instrument results
+```{r}
+
+final_data$pos_30 <- factor(final_data$pos_30 == 1, levels = c(TRUE, FALSE), labels = c("Yes", "No"))
+final_data$pos_90 <- factor(final_data$pos_90 == 1, levels = c(TRUE, FALSE), labels = c("Yes", "No"))
+final_data$rrr_30 <- factor(final_data$rrr_30 == 1, levels = c(TRUE, FALSE), labels = c("Yes", "No"))
+final_data$rrr_90 <- factor(final_data$rrr_90 == 1, levels = c(TRUE, FALSE), labels = c("Yes", "No"))
+
+train <- filter(final_data, what_set == "TR")
+holdout <- filter(final_data, what_set == "HO")
+res_30 <- table(test = final_data$pos_30, true = final_data$rrr_30)
+res_90 <- table(test = final_data$pos_90, true = final_data$rrr_90)
+sens_30 <- calcSens(res_30)
+spec_30 <- calcSpec(res_30)
+acc_30 <- calcAcc(res_30)
+sens_90 <- calcSens(res_90)
+spec_90 <- calcSpec(res_90)
+acc_90 <- calcAcc(res_90)
+
+tr_res_30 <- table(test = train$pos_30, true = train$rrr_30)
+tr_res_90 <- table(test = train$pos_90, true = train$rrr_90)
+tr_sens_30 <- calcSens(tr_res_30)
+tr_spec_30 <- calcSpec(tr_res_30)
+tr_acc_30 <- calcAcc(tr_res_30)
+tr_sens_90 <- calcSens(tr_res_90)
+tr_spec_90 <- calcSpec(tr_res_90)
+tr_acc_90 <- calcAcc(tr_res_90)
+
+ho_res_30 <- table(test = holdout$pos_30, true = holdout$rrr_30)
+ho_res_90 <- table(test = holdout$pos_90, true = holdout$rrr_90)
+ho_sens_30 <- calcSens(tr_res_30)
+ho_spec_30 <- calcSpec(ho_res_30)
+ho_acc_30 <- calcAcc(ho_res_30)
+ho_sens_90 <- calcSens(ho_res_90)
+ho_spec_90 <- calcSpec(ho_res_90)
+ho_acc_90 <- calcAcc(ho_res_90)
+instr_results <- list()
+instr_results <-append(instr_results, list( "30 days" = c(Sensitivity = sens_30, Specificity = spec_30, Accuracy = acc_30)))
+instr_results <-append(instr_results, list("90 days" = c(sensitivity = sens_90, Specificity = spec_90, Accuracy = acc_90)))
+instr_results <- do.call(rbind, instr_results)
+htmlTable(
+  instr_results %>% txtRound(digits=3), caption = "text", tfoot = "more text")
+```
+```{r}
+getSensSpec <- function(ds, getModelResults) {
+  ds <- na.omit(ds)
+  train_set <- filter(ds, what_set == "TR") %>%
+    select(-what_set)
+  holdout_set <- filter(ds, what_set == "HO") %>%
+    select(-what_set)
+  results <- list()
+  results <- append(results, getModelResults(train_set = train_set, holdout_set = holdout_set))
+
+  c(Sensitivity = calcSens(results[[1]]) ,
+    Specificity = calcSpec(results[[1]]),
+    AUC = results[[2]],
+    Accuracy = calcAcc(results[[1]]))}
+
+
+runModelsOnDs <- function(ds) {
+ 
+  runs <- list()
+  runs <- c(runs, 
+            list("Random forest crude" = getSensSpec(ds, getModelResults = function(train_set, holdout_set) {
+              model <- ranger(has_AE~., data = train_set)
+              p <- predict(model, data = holdout_set)
+              rfRoc <- data.frame(response = holdout_set$has_AE, predictor = p$predictions) %>%
+                arrange(predictor) %>%
+                with(., roc(response, predictor))
+              auc_res <- auc(rfRoc)
+              holdout_set$has_AE <- factor(holdout_set$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+              p$predictions <- ifelse(p$predictions< 0.5, "No", "Yes")
+              list(table(predicted = p$predictions, true=holdout_set$has_AE), auc_res)
+            })))
+runs <- c(runs,
+                      list("Logistic tegression with splines crude" = getSensSpec(ds, getModelResults = function(train_set, holdout_set) {
+              cross_model_log <- glm(has_AE ~los+age+readmissions+ sex,
+                                               family = binomial(link = logit),
+                                               data = train_set)
+              cross_model_log %<>% update(.~.- age + ns(age, 2))
+              p <- predict(cross_model_log, newdata = holdout_set, type = "response")
+              logRoc <- data.frame(response = holdout_set$has_AE, predictor = p) %>%
+                arrange(predictor) %>%
+                with(., roc(response, predictor))
+              auc_res <- auc(logRoc)
+              holdout_set$has_AE <- factor(holdout_set$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+              p <- ifelse(p > 0.5, "Yes", "No")
+              list(table(predicted = p, true=holdout_set$has_AE), auc_res)
+                      })))
+}
+
+results <- sapply(final_datasets, simplify = FALSE, FUN = runModelsOnDs)
+
+tmp <- lapply(results, function(x) do.call(rbind, x))
+names(tmp) <- c("30 days with index codes", "30 with readmission codes", "30 days",  "90 days with index codes", "90 days with readmission codes", "90 days")
+htmlTable(
+  do.call(rbind, tmp) %>% txtRound(digits=2),
+  rgroup = names(tmp),
+  n.rgroup = sapply(tmp, nrow),
+  caption = "Some tex",
+  tfoot = "more text"
+)
+
+fx_results
+list.save(results, "Final_results.rdata")
+ y <- load("Final_results.rdata") 
+ x
+```
