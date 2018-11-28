@@ -1,0 +1,19 @@
+
+> library(tidyverse)
+
+> library(pROC)
+
+> getSplit <- function(ds, rows) {
++   outcome <- ds$has_AE
++   outcome <- to_categorical(outcome, 2)
++   
++   list(
++     outcome = outcome[rows,],
++ .... [TRUNCATED] 
+
+> runModel <- function(ds) {
++   test <- sample(nrow(ds), size = round(nrow(ds)/10))
++   train <- which(!1:nrow(ds) %in% test)
++   test_data <- getSpl .... [TRUNCATED] 
+
+> runModel(neural_datasets$`30_wc`)

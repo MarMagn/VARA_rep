@@ -241,3 +241,50 @@ holdout_cases <- anti_join(keys, keys2) %>%
 all_cases <- rbind(training_cases, holdout_cases) %>%
   select(-pnr)
 final_data <- left_join(master, all_cases, by = "serial_no")
+library(tidyverse)
+library(readr)
+library(magrittr)
+encoding_type = "latin1"
+base_location <- file.path("/Volumes/NO NAME/VARA_DATA_orginal/")
+fn <- file.path(base_location, "aestudiepop_patientreg.txt")
+patient_reg <- read.delim(file=fn, 
+                          header=TRUE, 
+                          encoding=encoding_type, 
+                          stringsAsFactors=FALSE) %>% 
+  select(Personnummer, adm_date = `Inskrivningsdatum..num`, disch_date = `Utskrivningsdatum..num`, los = Vårdtid)
+
+patient_index_vtf <- file.path(base_location, "aeindexvtfstudiepop.txt") %>% 
+  read_delim(locale = locale('sv', encoding = 'latin1'), delim = "\t") %>% 
+  select(Personnummer, adm_date = `Inskrivningsdatum, num`, disch_date = `Utskrivningsdatum, num`, los = Vårdtid)
+
+unique(patient_index_vtf$Personnummer) %>% 
+  data_frame(Personnummer = ., id = 1:length(.)) %>% 
+  right_join(patient_index_vtf, by="Personnummer") %>% 
+  left_join(patient_reg, by = "Personnummer", suffix=c("_index", "_reg")) %>% 
+  filter(adm_date_index <= adm_date_reg & disch_date_index >= adm_date_reg) %>% 
+  select(-Personnummer)
+
+z <- patient_index_vtf %>% 
+  arrange(Personnummer, adm_date, disch_date) %>% 
+  distinct(Personnummer, adm_date, disch_date, .keep_all = TRUE) %>% 
+  mutate(continuous = is.na(lag(disch_date)) | (lag(disch_date) >= adm_date | lag(Personnummer) != Personnummer),
+         continuous = continuous & lag(continuous) | lag(Personnummer) != Personnummer,
+         continuous = ifelse(is.na(continuous), TRUE, continuous)) %>% 
+  filter(continuous) %>% 
+  select(-continuous) %>% 
+  group_by(Personnummer) %>% 
+  summarise(
+    adm_date = min(adm_date),
+    disch_date = max(disch_date)
+  ) %>% 
+  mutate(los_comb = as.numeric(disch_date - adm_date))
+x <- patient_index_vtf %>% 
+  arrange(Personnummer, adm_date, disch_date) %>% 
+  distinct(Personnummer, .keep_all = TRUE) %>%
+  rename(los_ort = los)
+y <- left_join(x, z, by = "Personnummer") %>%
+  select(pnr = Personnummer, los_ort, los_comb) %>%
+  right_join(keys, by = "pnr") %>%
+  select(-pnr)
+final_data <- left_join(final_data, y, by = "serial_no") %>%
+  select(-los)

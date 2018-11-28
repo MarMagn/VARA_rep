@@ -10,7 +10,7 @@ LOF <- read.delim("/Volumes/NO NAME/LOF_AE_description_x.csv",
                               stringsAsFactors=FALSE, sep = ";")
 encoding_type = "latin1"
 fn <- file.path(base_location, "ae_data.csv")
-rrr_data <- read.csv(file=fn, encoding=encoding_type)
+rrr_data <- read.delim2(file=fn, encoding="latin", sep = ";")
 
 rrr_data$event_date <- as.Date(rrr_data$event_date)
 

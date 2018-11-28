@@ -1,0 +1,4 @@
+{
+  "message": "object 'nn_data_90' not found",
+  "traceback": ["nrow(nn_data_90)", "sample(nrow(nn_data_90), size = round(nrow(nn_data)/10))", "eval(ei, envir)", "eval(ei, envir)", "training_run(\"nn_model.R\")"]
+}

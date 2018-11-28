@@ -1,0 +1,4 @@
+{
+  "message": "could not find function \"select\"",
+  "traceback": ["function_list[[i]](value)", "freduce(value, `_function_list`)", "`_fseq`(`_lhs`)", "eval(quote(`_fseq`(`_lhs`)), env, env)", "eval(quote(`_fseq`(`_lhs`)), env, env)", "withVisible(eval(quote(`_fseq`(`_lhs`)), env, env))", "ds[rows, ] %>% select(-has_AE) %>% as.matrix()", "getSplit(nn_data_90, test)", "eval(ei, envir)", "eval(ei, envir)", "training_run(\"nn_model.R\")"]
+}

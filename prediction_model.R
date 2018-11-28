@@ -222,11 +222,12 @@ no_na_data$has_AE <- factor(no_na_data$AEs > 0, levels = c(FALSE, TRUE), labels 
 no_na_data$AEs <- NULL
 # no_na_data$has_readm <- factor(no_na_data$readmissions > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
 # no_na_data$readmissions <- NULL
-rf <- randomForest(has_AE~., data = no_na_data)
-summary(rf)
-rf
-table(no_na_data$has_AE, model=
-              predict(rf))
+rf <- randomForest(has_AE~., data = data_90)
+p <- predict(rf)
+
+
+table(true = data_90$has_AE, model=
+              p)
 
 no_splits <- 10
 shuffled <- sample(nrow(no_na_data), replace = FALSE)
@@ -244,10 +245,16 @@ for (i in 0:(no_splits-1)) {
         train <- no_na_data[train_rows, ]
         #test_rows <- shuffled[!(shuffled %in% train)]
         test <- no_na_data[test_rows, ]
-        cross_model <- randomForest(has_AE ~ ., data = train)
-        p <- predict(cross_model, newdata = test)
-        #table(p, test$has_AE))
-        results <- append(results, list(table(predicted = p, true=test$has_AE)))
+        cross_model <- ranger(has_AE ~ ., data = train)
+        p <- predict(cross_model, data = test)
+        #rangerRoc <- data.frame(response = test$has_AE, predictor = p$predictions) %>% 
+          arrange(predictor) %>% 
+          with(., roc(response, predictor))
+        #auc_res <- auc(rangerRoc)
+        #test$has_AE <- factor(test$has_AE > 0, levels = c(FALSE, TRUE), labels = c("No", "Yes"))
+        #p$predictions <- ifelse(p$predictions< 0.5, "No", "Yes")
+        #table(p$predictions, test$has_AE)
+        #results <- c(results, list(table(predicted = p$predictions, true=test$has_AE)), auc_res)
 }
 calcSens <- function(x) {
         y <- x['Yes', 'Yes']/sum(x[ ,'Yes'])
@@ -296,7 +303,7 @@ test <- mutate(test, has_AE = if_else(has_AE == "Yes", 1, 0))
 my_rf <- ranger(has_AE~., data = train)
 pred <- predict(my_rf, data = test)
 library(pROC)
-rangerRoc <- data.frame(response = test$has_AE, predictor = pred$predictions) %>% 
+rangerRoc <- data.frame(response = test$has_AE, predictor = p$predictions) %>% 
   arrange(predictor) %>% 
   with(., roc(response, predictor))
 rangerRoc %>% plot

@@ -1,0 +1,4 @@
+{
+  "message": "could not find function \"roc\"",
+  "traceback": ["eval(substitute(expr), data, enclos = parent.frame())", "eval(substitute(expr), data, enclos = parent.frame())", "with.default(., roc(response, predictor))", "with(., roc(response, predictor))", "function_list[[k]](value)", "withVisible(function_list[[k]](value))", "freduce(value, `_function_list`)", "`_fseq`(`_lhs`)", "eval(quote(`_fseq`(`_lhs`)), env, env)", "eval(quote(`_fseq`(`_lhs`)), env, env)", "withVisible(eval(quote(`_fseq`(`_lhs`)), env, env))", "data.frame(response = nn_data_90[test, \"has_AE\"], predictor = y) %>% \n    arrange(predictor) %>% with(., roc(response, predictor))", "eval(ei, envir)", "eval(ei, envir)", "training_run(\"nn_model.R\")"]
+}

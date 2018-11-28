@@ -1,0 +1,6 @@
+
+> library(tidyverse)
+
+> library(pROC)
+
+> test <- sample(nrow(nn_data_90), size = round(nrow(nn_data)/10))

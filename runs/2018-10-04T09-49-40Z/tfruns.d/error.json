@@ -1,0 +1,4 @@
+{
+  "message": "invalid 'labels'; length 2 should be 1 or 1",
+  "traceback": ["stop(gettextf(\"invalid 'labels'; length %d should be 1 or %d\", \n    nlab, length(levels)), domain = NA)", "factor(., labels = c(\"No\", \"Yes\"))", "function_list[[k]](value)", "withVisible(function_list[[k]](value))", "freduce(value, `_function_list`)", "`_fseq`(`_lhs`)", "eval(quote(`_fseq`(`_lhs`)), env, env)", "eval(quote(`_fseq`(`_lhs`)), env, env)", "withVisible(eval(quote(`_fseq`(`_lhs`)), env, env))", "apply(pred, 1, function(v) which.max(v)) %>% factor(labels = c(\"No\", \n    \"Yes\"))", "eval(ei, envir)", "eval(ei, envir)", "training_run(\"nn_model.R\")"]
+}

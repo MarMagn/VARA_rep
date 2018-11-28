@@ -1,0 +1,14 @@
+
+> test <- sample(nrow(nn_data_90), size = round(nrow(nn_data)/10))
+
+> train <- which(!1:nrow(nn_data) %in% test)
+
+> getSplit <- function(ds, rows) {
++   outcome <- ds$has_AE
++   outcome <- to_categorical(outcome, 2)
++   
++   list(
++     outcome = outcome[rows,],
++ .... [TRUNCATED] 
+
+> test_data <- getSplit(nn_data_90, test)
